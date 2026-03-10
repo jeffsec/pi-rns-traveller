@@ -11,6 +11,12 @@ Portable RNode connectivity check script for Pi Zero 2W field use.
 - Runs `rnprobe` against a list of targets.
 - Prints a compact SSH-friendly summary.
 
+Port selection precedence:
+
+1. `--port` (explicit override)
+2. Existing `port = ...` in your Reticulum serial interface config
+3. Auto-detection
+
 ## Setup
 
 1. Create targets file:

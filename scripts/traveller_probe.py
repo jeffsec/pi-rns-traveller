@@ -154,6 +154,49 @@ def ensure_runtime_config(base_config_dir: Path, runtime_dir: Path) -> Path:
     return runtime_cfg
 
 
+def extract_configured_serial_port(config_path: Path) -> str | None:
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=False)
+    current_block: list[str] | None = None
+
+    def _read_block_port(block: list[str]) -> str | None:
+        iface_type = None
+        for line in block:
+            match = TYPE_RE.match(line)
+            if match:
+                iface_type = match.group(2).strip().lower()
+                break
+
+        if iface_type not in SERIAL_TYPE_NAMES:
+            return None
+
+        for line in block:
+            port_match = PORT_RE.match(line)
+            if port_match:
+                value = line.split("=", 1)[1].strip()
+                if value and value != "__SERIAL_PORT__":
+                    return value
+        return None
+
+    for line in lines:
+        if HEADER_RE.match(line):
+            if current_block is not None:
+                port = _read_block_port(current_block)
+                if port:
+                    return port
+            current_block = [line]
+            continue
+
+        if current_block is not None:
+            current_block.append(line)
+
+    if current_block is not None:
+        port = _read_block_port(current_block)
+        if port:
+            return port
+
+    return None
+
+
 def process_interface_block(block: list[str], serial_port: str) -> tuple[list[str], bool]:
     iface_type = None
     for line in block:
@@ -616,8 +659,6 @@ def main() -> int:
         eprint("rnprobe not found in PATH.")
         return 127
 
-    chosen_port, _ = detect_serial_port(args.port)
-    status(f"traveller_probe: selected port {chosen_port}")
     targets = load_targets(Path(args.targets_file).expanduser(), args.default_full_name)
     status(f"traveller_probe: loaded {len(targets)} targets")
 
@@ -646,6 +687,18 @@ def main() -> int:
         base_config_dir = Path(args.base_config_dir).expanduser()
         status(f"traveller_probe: preparing config from {base_config_dir}")
         runtime_cfg = ensure_runtime_config(base_config_dir, runtime_dir)
+        configured_port = extract_configured_serial_port(runtime_cfg)
+
+        if args.port:
+            chosen_port = args.port
+            status(f"traveller_probe: using --port override {chosen_port}")
+        elif configured_port:
+            chosen_port = configured_port
+            status(f"traveller_probe: using configured port {chosen_port}")
+        else:
+            chosen_port, _ = detect_serial_port(None)
+            status(f"traveller_probe: auto-detected port {chosen_port}")
+
         instance_name = f"traveller-{os.getpid()}"
         patched = patch_config(runtime_cfg, chosen_port, instance_name)
         if not patched:
