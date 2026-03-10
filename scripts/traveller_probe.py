@@ -75,6 +75,16 @@ class LocationFix:
     source: str
 
 
+@dataclass
+class BatteryStatus:
+    voltage_v: float | None
+    current_a: float | None
+    power_w: float | None
+    percent: float | None
+    source: str
+    error: str | None = None
+
+
 def eprint(message: str) -> None:
     print(message, file=sys.stderr)
 
@@ -150,12 +160,105 @@ def resolve_location(
     return LocationFix(lat=None, lon=None, alt_m=None, source="none")
 
 
+def read_ups_hat_c_status(i2c_bus: int = 1, addr: int = 0x43) -> BatteryStatus:
+    # Waveshare UPS HAT (C) uses INA219 at 0x43 and this calibration profile.
+    reg_config = 0x00
+    reg_shunt = 0x01
+    reg_bus = 0x02
+    reg_power = 0x03
+    reg_current = 0x04
+    reg_cal = 0x05
+
+    cal_value = 26868
+    current_lsb = 0.1524
+    power_lsb = 0.003048
+    config_value = 0x199F
+
+    try:
+        import smbus  # type: ignore
+    except Exception as exc:
+        return BatteryStatus(
+            voltage_v=None,
+            current_a=None,
+            power_w=None,
+            percent=None,
+            source="ups-hat-c-unavailable",
+            error=f"smbus import failed: {exc}",
+        )
+
+    try:
+        bus = smbus.SMBus(i2c_bus)
+
+        def read_word(register: int) -> int:
+            data = bus.read_i2c_block_data(addr, register, 2)
+            return (data[0] << 8) | data[1]
+
+        def write_word(register: int, value: int) -> None:
+            payload = [(value >> 8) & 0xFF, value & 0xFF]
+            bus.write_i2c_block_data(addr, register, payload)
+
+        write_word(reg_cal, cal_value)
+        write_word(reg_config, config_value)
+        time.sleep(0.05)
+
+        write_word(reg_cal, cal_value)
+        bus_voltage_v = (read_word(reg_bus) >> 3) * 0.004
+
+        write_word(reg_cal, cal_value)
+        shunt_raw = read_word(reg_shunt)
+        if shunt_raw > 32767:
+            shunt_raw -= 65535
+        shunt_v = (shunt_raw * 0.01) / 1000.0
+
+        current_raw = read_word(reg_current)
+        if current_raw > 32767:
+            current_raw -= 65535
+        current_a = (current_raw * current_lsb) / 1000.0
+
+        write_word(reg_cal, cal_value)
+        power_raw = read_word(reg_power)
+        if power_raw > 32767:
+            power_raw -= 65535
+        power_w = power_raw * power_lsb
+
+        # Waveshare reference formula: p = (bus_voltage - 3) / 1.2 * 100
+        percent = ((bus_voltage_v - 3.0) / 1.2) * 100.0
+        percent = 100.0 if percent > 100.0 else percent
+        percent = 0.0 if percent < 0.0 else percent
+
+        # PSU/load voltage estimate from Waveshare note.
+        load_v = bus_voltage_v + shunt_v
+
+        try:
+            bus.close()
+        except Exception:
+            pass
+
+        return BatteryStatus(
+            voltage_v=load_v,
+            current_a=current_a,
+            power_w=power_w,
+            percent=percent,
+            source="ups-hat-c",
+        )
+    except Exception as exc:
+        return BatteryStatus(
+            voltage_v=None,
+            current_a=None,
+            power_w=None,
+            percent=None,
+            source="ups-hat-c-error",
+            error=str(exc),
+        )
+
+
 def append_history_rows(
     history_file: Path,
     run_started_utc: dt.datetime,
     elapsed_s: float,
     port: str,
     location: LocationFix,
+    battery: BatteryStatus,
     results: Iterable[ProbeResult],
 ) -> int:
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -169,6 +272,12 @@ def append_history_rows(
         "lat",
         "lon",
         "alt_m",
+        "battery_source",
+        "battery_voltage_v",
+        "battery_current_a",
+        "battery_power_w",
+        "battery_pct",
+        "battery_error",
         "label",
         "destination_hash",
         "reachable",
@@ -196,6 +305,12 @@ def append_history_rows(
                     "lat": "" if location.lat is None else f"{location.lat:.7f}",
                     "lon": "" if location.lon is None else f"{location.lon:.7f}",
                     "alt_m": "" if location.alt_m is None else f"{location.alt_m:.2f}",
+                    "battery_source": battery.source,
+                    "battery_voltage_v": "" if battery.voltage_v is None else f"{battery.voltage_v:.3f}",
+                    "battery_current_a": "" if battery.current_a is None else f"{battery.current_a:.4f}",
+                    "battery_power_w": "" if battery.power_w is None else f"{battery.power_w:.4f}",
+                    "battery_pct": "" if battery.percent is None else f"{battery.percent:.1f}",
+                    "battery_error": "" if battery.error is None else battery.error,
                     "label": result.target.label,
                     "destination_hash": result.target.destination_hash,
                     "reachable": int(result.reachable),
@@ -747,6 +862,13 @@ def main() -> int:
     parser.add_argument("--lat", type=float, default=None, help="Manual latitude override.")
     parser.add_argument("--lon", type=float, default=None, help="Manual longitude override.")
     parser.add_argument("--alt", type=float, default=None, help="Manual altitude (meters) override.")
+    parser.add_argument("--ups-hat-c", action="store_true", help="Read battery from Waveshare UPS HAT (C) INA219.")
+    parser.add_argument("--ups-i2c-bus", type=int, default=1, help="I2C bus index for UPS HAT (C) (default: 1).")
+    parser.add_argument(
+        "--ups-i2c-addr",
+        default="0x43",
+        help="I2C address for UPS HAT (C) INA219 (default: 0x43).",
+    )
     parser.add_argument(
         "--history-file",
         default="logs/traveller-history.csv",
@@ -819,6 +941,13 @@ def main() -> int:
     rnsd_proc: subprocess.Popen[str] | None = None
     started = time.monotonic()
     run_started_utc = dt.datetime.now(dt.timezone.utc)
+    battery = BatteryStatus(
+        voltage_v=None,
+        current_a=None,
+        power_w=None,
+        percent=None,
+        source="none",
+    )
     exit_code = 0
 
     def cleanup(*_: object) -> None:
@@ -852,6 +981,24 @@ def main() -> int:
         else:
             chosen_port, _ = detect_serial_port(None)
             status(f"traveller_probe: auto-detected port {chosen_port}")
+
+        if args.ups_hat_c:
+            ups_addr = int(str(args.ups_i2c_addr), 0)
+            battery = read_ups_hat_c_status(i2c_bus=args.ups_i2c_bus, addr=ups_addr)
+            if battery.voltage_v is not None:
+                current_text = "-" if battery.current_a is None else f"{battery.current_a:.3f}A"
+                power_text = "-" if battery.power_w is None else f"{battery.power_w:.3f}W"
+                pct_text = "-" if battery.percent is None else f"{battery.percent:.1f}%"
+                status(
+                    "traveller_probe: battery "
+                    f"{battery.voltage_v:.3f}V {current_text} "
+                    f"{power_text} {pct_text} ({battery.source})"
+                )
+            else:
+                status(
+                    "traveller_probe: battery unavailable "
+                    f"({battery.source}{': ' + battery.error if battery.error else ''})"
+                )
 
         instance_name = f"traveller-{os.getpid()}"
         patched = patch_config(runtime_cfg, chosen_port, instance_name)
@@ -914,6 +1061,7 @@ def main() -> int:
                 elapsed_s=elapsed,
                 port=chosen_port,
                 location=location,
+                battery=battery,
                 results=results,
             )
             status(f"traveller_probe: appended {rows} history rows to {history_path}")

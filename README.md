@@ -44,6 +44,8 @@ Useful flags:
 - `--verbose` print raw `rnprobe` output per target.
 - `--gpsd` try reading a GPS fix from local `gpsd` (if a GPS receiver is attached).
 - `--lat ... --lon ... [--alt ...]` manually attach coordinates when no GPS hardware is present.
+- `--ups-hat-c` read battery metrics from Waveshare UPS HAT (C) INA219 (default addr `0x43`).
+- `--ups-i2c-bus 1 --ups-i2c-addr 0x43` override UPS HAT (C) I2C bus/address.
 - `--history-file logs/traveller-history.csv` append per-target run rows (location + outcome).
 - `--no-history` disable CSV history logging.
 
