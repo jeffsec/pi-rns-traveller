@@ -67,6 +67,10 @@ def eprint(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def status(message: str) -> None:
+    print(message, flush=True)
+
+
 def command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
@@ -502,7 +506,7 @@ def run_probes(
         ]
 
         if show_progress:
-            print(f"[{index}/{total}] probing {target.label}", end="", flush=True)
+            status(f"[{index}/{total}] probing {target.label}")
 
         run = subprocess.Popen(  # noqa: S603
             cmd,
@@ -528,8 +532,8 @@ def run_probes(
         parsed = parse_probe_result(target, output, run.returncode)
         results.append(parsed)
         if show_progress:
-            status = "OK" if parsed.reachable else "NO"
-            print(f" {status}")
+            probe_status = "OK" if parsed.reachable else "NO"
+            print(f"  -> {probe_status}", flush=True)
 
     return results
 
@@ -591,6 +595,7 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    status("traveller_probe: starting")
 
     if args.list_ports:
         candidates = list_serial_candidates()
@@ -612,7 +617,9 @@ def main() -> int:
         return 127
 
     chosen_port, _ = detect_serial_port(args.port)
+    status(f"traveller_probe: selected port {chosen_port}")
     targets = load_targets(Path(args.targets_file).expanduser(), args.default_full_name)
+    status(f"traveller_probe: loaded {len(targets)} targets")
 
     runtime_dir = Path(tempfile.mkdtemp(prefix="pi-rns-traveller-"))
     rnsd_proc: subprocess.Popen[str] | None = None
@@ -637,6 +644,7 @@ def main() -> int:
 
     try:
         base_config_dir = Path(args.base_config_dir).expanduser()
+        status(f"traveller_probe: preparing config from {base_config_dir}")
         runtime_cfg = ensure_runtime_config(base_config_dir, runtime_dir)
         instance_name = f"traveller-{os.getpid()}"
         patched = patch_config(runtime_cfg, chosen_port, instance_name)
@@ -648,8 +656,12 @@ def main() -> int:
             return 2
 
         rnsd_log = runtime_dir / "rnsd.log"
+        status("traveller_probe: starting rnsd")
         rnsd_proc = start_rnsd(runtime_dir, rnsd_log)
-        time.sleep(max(args.startup_seconds, 0))
+        startup_wait = max(args.startup_seconds, 0)
+        if startup_wait > 0:
+            status(f"traveller_probe: waiting {startup_wait:.1f}s for rnsd startup")
+            time.sleep(startup_wait)
 
         if rnsd_proc.poll() is not None:
             log_tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
@@ -658,6 +670,7 @@ def main() -> int:
                 eprint(f"  {line}")
             return 3
 
+        status("traveller_probe: running probes")
         results = run_probes(
             config_dir=runtime_dir,
             targets=targets,
