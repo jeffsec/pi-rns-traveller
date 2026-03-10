@@ -1,0 +1,10 @@
+# Target formats supported:
+# 1) label|full_name|destination_hash
+# 2) label|destination_hash              (uses default full_name)
+# 3) full_name destination_hash          (label defaults to hash prefix)
+#
+# Copy this to config/targets.txt and replace with your real nodes.
+#
+# Example (from your previous testing style):
+# local-seeed|rnstransport.probe|6e85a611f88f5847a5210882eb89bb96
+# remote-e4|rnstransport.probe|e4f166b2465faaab414b3e0b24947687

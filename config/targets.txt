@@ -1,0 +1,4 @@
+# label|full_name|destination_hash
+seeed-local|rnstransport.probe|6e85a611f88f5847a5210882eb89bb96
+heltec-remote|rnstransport.probe|e4f166b2465faaab414b3e0b24947687
+alt-remote|rnstransport.probe|0f61e875409ab6bd7931447f2b476f21
