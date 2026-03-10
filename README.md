@@ -42,6 +42,10 @@ Useful flags:
 - `--no-progress` disable per-target progress output.
 - `--keep-runtime` keep generated runtime config/log for debugging.
 - `--verbose` print raw `rnprobe` output per target.
+- `--gpsd` try reading a GPS fix from local `gpsd` (if a GPS receiver is attached).
+- `--lat ... --lon ... [--alt ...]` manually attach coordinates when no GPS hardware is present.
+- `--history-file logs/traveller-history.csv` append per-target run rows (location + outcome).
+- `--no-history` disable CSV history logging.
 
 ## Important Config Note
 

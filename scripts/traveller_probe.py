@@ -14,10 +14,14 @@ Workflow:
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
+import json
 import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -63,6 +67,14 @@ class ProbeResult:
     exit_code: int
 
 
+@dataclass
+class LocationFix:
+    lat: float | None
+    lon: float | None
+    alt_m: float | None
+    source: str
+
+
 def eprint(message: str) -> None:
     print(message, file=sys.stderr)
 
@@ -73,6 +85,132 @@ def status(message: str) -> None:
 
 def command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
+
+
+def _to_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_gpsd_fix(timeout_seconds: float, host: str = "127.0.0.1", port: int = 2947) -> LocationFix:
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    try:
+        with socket.create_connection((host, port), timeout=2.0) as sock:
+            sock.settimeout(1.0)
+            sock.sendall(b'?WATCH={"enable":true,"json":true}\n')
+            buffer = ""
+            while time.monotonic() < deadline:
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="ignore")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line or '"class":"TPV"' not in line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    mode = int(payload.get("mode", 0) or 0)
+                    lat = _to_float(payload.get("lat"))
+                    lon = _to_float(payload.get("lon"))
+                    alt = _to_float(payload.get("alt"))
+                    if mode >= 2 and lat is not None and lon is not None:
+                        return LocationFix(lat=lat, lon=lon, alt_m=alt, source="gpsd")
+    except OSError:
+        pass
+
+    return LocationFix(lat=None, lon=None, alt_m=None, source="gps-none")
+
+
+def resolve_location(
+    manual_lat: float | None,
+    manual_lon: float | None,
+    manual_alt: float | None,
+    use_gpsd: bool,
+    gpsd_timeout: float,
+) -> LocationFix:
+    if manual_lat is not None or manual_lon is not None:
+        if manual_lat is None or manual_lon is None:
+            raise RuntimeError("Both --lat and --lon must be set together.")
+        return LocationFix(lat=manual_lat, lon=manual_lon, alt_m=manual_alt, source="manual")
+
+    if use_gpsd:
+        return get_gpsd_fix(timeout_seconds=gpsd_timeout)
+
+    return LocationFix(lat=None, lon=None, alt_m=None, source="none")
+
+
+def append_history_rows(
+    history_file: Path,
+    run_started_utc: dt.datetime,
+    elapsed_s: float,
+    port: str,
+    location: LocationFix,
+    results: Iterable[ProbeResult],
+) -> int:
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    existed = history_file.exists()
+
+    fieldnames = [
+        "run_started_utc",
+        "elapsed_s",
+        "serial_port",
+        "gps_source",
+        "lat",
+        "lon",
+        "alt_m",
+        "label",
+        "destination_hash",
+        "reachable",
+        "sent",
+        "received",
+        "loss_pct",
+        "rtt_ms",
+        "hops",
+        "reason",
+        "exit_code",
+    ]
+
+    rows = 0
+    with history_file.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if not existed:
+            writer.writeheader()
+        for result in results:
+            writer.writerow(
+                {
+                    "run_started_utc": run_started_utc.replace(microsecond=0).isoformat(),
+                    "elapsed_s": f"{elapsed_s:.3f}",
+                    "serial_port": port,
+                    "gps_source": location.source,
+                    "lat": "" if location.lat is None else f"{location.lat:.7f}",
+                    "lon": "" if location.lon is None else f"{location.lon:.7f}",
+                    "alt_m": "" if location.alt_m is None else f"{location.alt_m:.2f}",
+                    "label": result.target.label,
+                    "destination_hash": result.target.destination_hash,
+                    "reachable": int(result.reachable),
+                    "sent": result.sent,
+                    "received": result.received,
+                    "loss_pct": f"{result.loss_pct:.2f}",
+                    "rtt_ms": "" if result.rtt_ms is None else f"{result.rtt_ms:.3f}",
+                    "hops": "" if result.hops is None else result.hops,
+                    "reason": result.reason,
+                    "exit_code": result.exit_code,
+                }
+            )
+            rows += 1
+
+    return rows
 
 
 def list_serial_candidates() -> list[str]:
@@ -604,6 +742,21 @@ def main() -> int:
     parser.add_argument("--probes", type=int, default=1, help="Probes per target.")
     parser.add_argument("--timeout", type=float, default=12.0, help="Probe timeout seconds.")
     parser.add_argument("--wait", type=float, default=0.0, help="Wait between probes seconds.")
+    parser.add_argument("--gpsd", action="store_true", help="Try GPS fix from local gpsd (127.0.0.1:2947).")
+    parser.add_argument("--gpsd-timeout", type=float, default=6.0, help="Seconds to wait for gpsd fix.")
+    parser.add_argument("--lat", type=float, default=None, help="Manual latitude override.")
+    parser.add_argument("--lon", type=float, default=None, help="Manual longitude override.")
+    parser.add_argument("--alt", type=float, default=None, help="Manual altitude (meters) override.")
+    parser.add_argument(
+        "--history-file",
+        default="logs/traveller-history.csv",
+        help="Append per-target run history CSV to this path.",
+    )
+    parser.add_argument(
+        "--no-history",
+        action="store_true",
+        help="Disable CSV history logging.",
+    )
     parser.add_argument(
         "--heartbeat-seconds",
         type=float,
@@ -665,6 +818,7 @@ def main() -> int:
     runtime_dir = Path(tempfile.mkdtemp(prefix="pi-rns-traveller-"))
     rnsd_proc: subprocess.Popen[str] | None = None
     started = time.monotonic()
+    run_started_utc = dt.datetime.now(dt.timezone.utc)
     exit_code = 0
 
     def cleanup(*_: object) -> None:
@@ -735,7 +889,34 @@ def main() -> int:
             verbose=args.verbose,
         )
         elapsed = time.monotonic() - started
+        location = resolve_location(
+            manual_lat=args.lat,
+            manual_lon=args.lon,
+            manual_alt=args.alt,
+            use_gpsd=args.gpsd,
+            gpsd_timeout=args.gpsd_timeout,
+        )
+        status(
+            "traveller_probe: location "
+            + (
+                f"{location.lat:.7f},{location.lon:.7f}"
+                if location.lat is not None and location.lon is not None
+                else "unavailable"
+            )
+            + f" ({location.source})"
+        )
         summarize(chosen_port, elapsed, results)
+        if not args.no_history:
+            history_path = Path(args.history_file).expanduser()
+            rows = append_history_rows(
+                history_file=history_path,
+                run_started_utc=run_started_utc,
+                elapsed_s=elapsed,
+                port=chosen_port,
+                location=location,
+                results=results,
+            )
+            status(f"traveller_probe: appended {rows} history rows to {history_path}")
 
         unreachable = sum(1 for result in results if not result.reachable)
         exit_code = 0 if unreachable == 0 else 4
