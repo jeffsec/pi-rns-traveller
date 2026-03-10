@@ -480,10 +480,13 @@ def run_probes(
     probes: int,
     timeout: float,
     wait: float,
+    heartbeat_seconds: float,
+    show_progress: bool,
     verbose: bool,
 ) -> list[ProbeResult]:
     results: list[ProbeResult] = []
-    for target in targets:
+    total = len(targets)
+    for index, target in enumerate(targets, start=1):
         cmd = [
             "rnprobe",
             "--config",
@@ -497,12 +500,37 @@ def run_probes(
             target.full_name,
             target.destination_hash,
         ]
-        run = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
-        output = (run.stdout or "") + (run.stderr or "")
+
+        if show_progress:
+            print(f"[{index}/{total}] probing {target.label}", end="", flush=True)
+
+        run = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        heartbeat = max(heartbeat_seconds, 0.0)
+        next_heartbeat = time.monotonic() + heartbeat if heartbeat > 0 else None
+        while run.poll() is None:
+            if show_progress and next_heartbeat is not None and time.monotonic() >= next_heartbeat:
+                print(".", end="", flush=True)
+                next_heartbeat += heartbeat
+            time.sleep(0.2)
+
+        stdout, stderr = run.communicate()
+        output = (stdout or "") + (stderr or "")
         if verbose:
             print(f"\n--- {target.label} raw rnprobe output ---")
             print(output.strip() or "(no output)")
-        results.append(parse_probe_result(target, output, run.returncode))
+
+        parsed = parse_probe_result(target, output, run.returncode)
+        results.append(parsed)
+        if show_progress:
+            status = "OK" if parsed.reachable else "NO"
+            print(f" {status}")
+
     return results
 
 
@@ -529,6 +557,17 @@ def main() -> int:
     parser.add_argument("--probes", type=int, default=1, help="Probes per target.")
     parser.add_argument("--timeout", type=float, default=12.0, help="Probe timeout seconds.")
     parser.add_argument("--wait", type=float, default=0.0, help="Wait between probes seconds.")
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=5.0,
+        help="Print heartbeat dots while probes run (set 0 to disable).",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable per-target progress output.",
+    )
     parser.add_argument(
         "--startup-seconds",
         type=float,
@@ -625,6 +664,8 @@ def main() -> int:
             probes=args.probes,
             timeout=args.timeout,
             wait=args.wait,
+            heartbeat_seconds=args.heartbeat_seconds,
+            show_progress=not args.no_progress,
             verbose=args.verbose,
         )
         elapsed = time.monotonic() - started

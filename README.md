@@ -32,6 +32,8 @@ Useful flags:
 - `--list-ports` list detected serial devices.
 - `--port /dev/ttyACM0` force a specific port.
 - `--timeout 10 --probes 1` tune probing.
+- `--heartbeat-seconds 3` print progress dots while each probe runs (helps SSH sessions stay alive).
+- `--no-progress` disable per-target progress output.
 - `--keep-runtime` keep generated runtime config/log for debugging.
 - `--verbose` print raw `rnprobe` output per target.
 
