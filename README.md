@@ -214,19 +214,39 @@ git clone https://github.com/jeffsec/pi-rns-traveller.git
 cd pi-rns-traveller
 ```
 
-3. Install your Reticulum/RNode CLI stack (`rnsd`, `rnprobe`, `rnodeconf`) using your standard method, then verify:
+3. Install ePaper V4 + UPS dependencies and Waveshare Python library path:
+
+```bash
+sudo ./scripts/setup_epaper_v4.sh --target-user jferris
+```
+
+If SPI/I2C were just enabled, reboot:
+
+```bash
+sudo reboot
+```
+
+After reconnect:
+
+```bash
+cd ~/pi-rns-traveller
+ls /dev/spidev0.0
+i2cdetect -y 1
+```
+
+4. Install your Reticulum/RNode CLI stack (`rnsd`, `rnprobe`, `rnodeconf`) using your standard method, then verify:
 
 ```bash
 command -v rnsd rnprobe rnodeconf
 ```
 
-4. Configure targets:
+5. Configure targets:
 
 ```bash
 cp config/targets.example.txt config/targets.local.txt
 ```
 
-5. Configure NetworkManager AP + recovery Ethernet:
+6. Configure NetworkManager AP + recovery Ethernet:
 
 ```bash
 sudo ./scripts/setup_nm_ap_mode.sh \
@@ -234,7 +254,7 @@ sudo ./scripts/setup_nm_ap_mode.sh \
   --passphrase "replace-with-strong-passphrase"
 ```
 
-6. Install/start traveller appliance service:
+7. Install/start traveller appliance service:
 
 ```bash
 sudo cp deploy/pi-rns-traveller.service /etc/systemd/system/pi-rns-traveller.service
@@ -242,7 +262,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pi-rns-traveller.service
 ```
 
-7. Verify:
+8. Verify:
 
 ```bash
 systemctl status pi-rns-traveller.service --no-pager

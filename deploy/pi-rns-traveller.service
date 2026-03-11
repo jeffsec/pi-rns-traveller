@@ -10,7 +10,7 @@ WorkingDirectory=/home/jferris/pi-rns-traveller
 Environment=PATH=/home/jferris/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/home/jferris/e-Paper/RaspberryPi_JetsonNano/python/lib
-ExecStart=/usr/bin/python3 /home/jferris/pi-rns-traveller/scripts/traveller_appliance.py --base-config-dir /home/jferris/.reticulum --ups-hat-c --gpsd --state-dir /home/jferris/pi-rns-traveller/state --check-interval-seconds 120 --trigger-file /tmp/pi-rns-traveller.run-now
+ExecStart=/usr/bin/python3 /home/jferris/pi-rns-traveller/scripts/traveller_appliance.py --base-config-dir /home/jferris/.reticulum --epd-driver epd2in13_V4 --ups-hat-c --gpsd --state-dir /home/jferris/pi-rns-traveller/state --check-interval-seconds 120 --trigger-file /tmp/pi-rns-traveller.run-now
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGINT
