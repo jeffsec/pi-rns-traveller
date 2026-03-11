@@ -188,6 +188,7 @@ Notes:
 
 - Newer setup supports systems with or without `dhcpcd.service`.
 - If an earlier run failed with `Failed to restart dhcpcd.service`, pull latest and rerun the setup script.
+- If `NetworkManager` is present, setup marks `wlan0` unmanaged to keep AP-only mode stable.
 
 Then install/refresh traveller appliance service:
 

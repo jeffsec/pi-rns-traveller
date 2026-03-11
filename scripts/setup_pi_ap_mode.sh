@@ -247,6 +247,16 @@ install -m 0644 "${REPO_DIR}/deploy/network/pi-rns-ap-health.timer" /etc/systemd
 echo "[8/9] Enabling services..."
 systemctl unmask hostapd || true
 systemctl disable --now wpa_supplicant@"${AP_IFACE}".service || true
+if systemctl list-unit-files | grep -q '^NetworkManager\.service'; then
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > /etc/NetworkManager/conf.d/99-pi-rns-traveller-unmanaged.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:${AP_IFACE}
+EOF
+    if systemctl is-active --quiet NetworkManager; then
+        systemctl restart NetworkManager || true
+    fi
+fi
 systemctl enable pi-rns-ap-addr.service hostapd dnsmasq nftables pi-rns-ap-health.timer
 
 echo "[9/9] Restarting networking stack..."
