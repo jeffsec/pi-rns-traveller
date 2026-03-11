@@ -22,15 +22,21 @@ Port selection precedence:
 1. Create targets file:
 
 ```bash
-cp config/targets.example.txt config/targets.txt
+cp config/targets.example.txt config/targets.local.txt
 ```
 
-2. Edit `config/targets.txt` with your destination hashes.
+2. Edit `config/targets.local.txt` with your destination hashes.
+
+Private/local target list (recommended):
+
+- Put personal hashes in `config/targets.local.txt` (ignored by git).
+- If `config/targets.local.txt` exists, scripts use it automatically.
+- You can still override with `--targets-file ...`.
 
 ## Run
 
 ```bash
-python3 scripts/traveller_probe.py --base-config-dir ~/.reticulum --targets-file config/targets.txt
+python3 scripts/traveller_probe.py --base-config-dir ~/.reticulum
 ```
 
 Useful flags:
@@ -56,3 +62,64 @@ The script expects your base Reticulum config to already contain at least one se
 - `type = RNodeInterface`, `KISSInterface`, or `AX25KISSInterface`.
 
 If none are present, patching fails. In that case, add one in `~/.reticulum/config` first.
+
+## Appliance Mode (Boot -> Check -> Results)
+
+`scripts/traveller_appliance.py` is the always-on controller for your Pi + UPS + ePaper build.
+
+What it does:
+
+- Shows `BOOTING`, `CHECKING`, `RESULTS`, and `ERROR` states.
+- Runs periodic probe cycles without SSH interaction.
+- Writes durable logs to SQLite with `WAL` + `synchronous=FULL`.
+- Writes last known state atomically to `state/state.json`.
+- Holds on `ERROR` until restart by default.
+
+Run once for testing:
+
+```bash
+python3 scripts/traveller_appliance.py --once --no-epd
+```
+
+Run with ePaper + battery + GPS:
+
+```bash
+python3 scripts/traveller_appliance.py \
+  --ups-hat-c \
+  --gpsd \
+  --check-interval-seconds 120
+```
+
+Important flags:
+
+- `--no-epd` console-only mode.
+- `--epd-driver auto|epd2in13_V3|epd2in13_V2|epd2in13` force panel driver.
+- `--state-dir /path` persistent state/log directory.
+- `--continue-on-error` continue periodic checks after failures.
+
+Durable appliance logs:
+
+- `state/history.db` SQLite run + per-target result history.
+- `state/state.json` latest appliance screen state.
+
+## Systemd Autostart
+
+Service template:
+
+- `deploy/pi-rns-traveller.service`
+
+Install on Pi:
+
+```bash
+sudo cp deploy/pi-rns-traveller.service /etc/systemd/system/pi-rns-traveller.service
+sudo systemctl daemon-reload
+sudo systemctl enable pi-rns-traveller.service
+sudo systemctl start pi-rns-traveller.service
+```
+
+Check status:
+
+```bash
+systemctl status pi-rns-traveller.service --no-pager
+journalctl -u pi-rns-traveller.service -n 120 --no-pager
+```

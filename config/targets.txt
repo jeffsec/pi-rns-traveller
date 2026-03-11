@@ -1,4 +1,10 @@
-# label|full_name|destination_hash
-seeed-local|rnstransport.probe|6e85a611f88f5847a5210882eb89bb96
-heltec-remote|rnstransport.probe|e4f166b2465faaab414b3e0b24947687
-alt-remote|rnstransport.probe|0f61e875409ab6bd7931447f2b476f21
+# Target formats supported:
+# 1) label|full_name|destination_hash
+# 2) label|destination_hash              (uses default full_name)
+# 3) full_name destination_hash          (label defaults to hash prefix)
+#
+# Copy this to config/targets.txt and replace with your real nodes.
+#
+# Example (from your previous testing style):
+# local-seeed|rnstransport.probe|6e85a611f88f5847a5210882eb89bb96
+# remote-e4|rnstransport.probe|e4f166b2465faaab414b3e0b24947687

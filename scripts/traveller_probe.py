@@ -45,6 +45,8 @@ RTT_RE = re.compile(
     re.IGNORECASE,
 )
 HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+DEFAULT_TARGETS_FILE = "config/targets.txt"
+LOCAL_TARGETS_FILE = Path("config/targets.local.txt")
 
 
 @dataclass
@@ -720,6 +722,14 @@ def load_targets(targets_file: Path, default_full_name: str) -> list[Target]:
     return targets
 
 
+def resolve_targets_file(targets_file_arg: str) -> Path:
+    requested = Path(targets_file_arg).expanduser()
+    if targets_file_arg in (DEFAULT_TARGETS_FILE, f"./{DEFAULT_TARGETS_FILE}"):
+        if LOCAL_TARGETS_FILE.exists():
+            return LOCAL_TARGETS_FILE
+    return requested
+
+
 def format_rtt(rtt_ms: float | None) -> str:
     if rtt_ms is None:
         return "-"
@@ -845,8 +855,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--targets-file",
-        default="config/targets.txt",
-        help="Path to targets file (default: config/targets.txt).",
+        default=DEFAULT_TARGETS_FILE,
+        help=(
+            "Path to targets file "
+            "(default: config/targets.txt; auto-uses config/targets.local.txt if present)."
+        ),
     )
     parser.add_argument(
         "--default-full-name",
@@ -934,8 +947,12 @@ def main() -> int:
         eprint("rnprobe not found in PATH.")
         return 127
 
-    targets = load_targets(Path(args.targets_file).expanduser(), args.default_full_name)
-    status(f"traveller_probe: loaded {len(targets)} targets")
+    requested_targets_path = Path(args.targets_file).expanduser()
+    targets_path = resolve_targets_file(args.targets_file)
+    if targets_path != requested_targets_path:
+        status(f"traveller_probe: using local targets file {targets_path}")
+    targets = load_targets(targets_path, args.default_full_name)
+    status(f"traveller_probe: loaded {len(targets)} targets from {targets_path}")
 
     runtime_dir = Path(tempfile.mkdtemp(prefix="pi-rns-traveller-"))
     rnsd_proc: subprocess.Popen[str] | None = None
