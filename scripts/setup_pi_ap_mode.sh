@@ -8,6 +8,7 @@ AP_IFACE="wlan0"
 UPLINK_IFACE="eth0"
 AP_CIDR="10.13.37.1/24"
 AP_SUBNET="10.13.37.0/24"
+AP_IP="10.13.37.1"
 DHCP_START="10.13.37.50"
 DHCP_END="10.13.37.150"
 COUNTRY_CODE="US"
@@ -116,6 +117,8 @@ if [ ! -d "${REPO_DIR}/deploy/network" ]; then
     exit 1
 fi
 
+AP_IP="${AP_CIDR%%/*}"
+
 IP_BIN="$(command -v ip || true)"
 if [ -z "${IP_BIN}" ]; then
     echo "ip command not found." >&2
@@ -129,6 +132,7 @@ render_template() {
         -e "s|{{AP_IFACE}}|${AP_IFACE}|g" \
         -e "s|{{UPLINK_IFACE}}|${UPLINK_IFACE}|g" \
         -e "s|{{AP_CIDR}}|${AP_CIDR}|g" \
+        -e "s|{{AP_IP}}|${AP_IP}|g" \
         -e "s|{{AP_SUBNET}}|${AP_SUBNET}|g" \
         -e "s|{{DHCP_START}}|${DHCP_START}|g" \
         -e "s|{{DHCP_END}}|${DHCP_END}|g" \
