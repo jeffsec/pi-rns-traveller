@@ -83,6 +83,20 @@ def short_port(port: str | None) -> str:
     return Path(port).name[:24]
 
 
+def consume_trigger_file(path: Path) -> bool:
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except IsADirectoryError:
+        print(f"trigger path is a directory, expected file: {path}", flush=True)
+        return False
+    except OSError as exc:
+        print(f"could not consume trigger file {path}: {exc}", flush=True)
+        return False
+
+
 def trim_ascii(text: str, width: int) -> str:
     if len(text) <= width:
         return text
@@ -866,6 +880,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-file", default="history.db")
     parser.add_argument("--state-file", default="state.json")
     parser.add_argument("--check-interval-seconds", type=int, default=120)
+    parser.add_argument(
+        "--trigger-file",
+        default="/tmp/pi-rns-traveller.run-now",
+        help="Touch this file to trigger an immediate run while waiting.",
+    )
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit.")
     parser.add_argument(
         "--continue-on-error",
@@ -891,6 +910,7 @@ def main() -> int:
     state_dir = Path(args.state_dir).expanduser()
     db_path = state_dir / args.db_file
     state_path = state_dir / args.state_file
+    trigger_file = Path(args.trigger_file).expanduser()
 
     for required_cmd in ("rnsd", "rnprobe"):
         if shutil.which(required_cmd) is None:
@@ -914,6 +934,10 @@ def main() -> int:
         epd_partial_every=args.epd_partial_every,
     )
     conn = ensure_database(db_path)
+    print(
+        f"appliance config: interval={max(int(args.check_interval_seconds), 1)}s trigger_file={trigger_file}",
+        flush=True,
+    )
 
     try:
         while not stop_requested:
@@ -940,7 +964,40 @@ def main() -> int:
             }
             display.update(snapshot, force=True)
             atomic_write_json(state_path, snapshot)
-            time.sleep(wait_s)
+
+            deadline = time.monotonic() + wait_s
+            last_shown_remaining: int | None = wait_s
+            while not stop_requested:
+                if consume_trigger_file(trigger_file):
+                    print(f"manual trigger received ({trigger_file}), running now", flush=True)
+                    snapshot = {
+                        "stage": "WAIT",
+                        "message": "manual trigger",
+                        "summary": "running now",
+                    }
+                    display.update(snapshot)
+                    atomic_write_json(state_path, snapshot)
+                    break
+
+                remaining = int(deadline - time.monotonic())
+                if remaining <= 0:
+                    break
+
+                should_refresh_wait = (
+                    remaining != last_shown_remaining
+                    and (remaining <= 10 or remaining % 10 == 0)
+                )
+                if should_refresh_wait:
+                    snapshot = {
+                        "stage": "WAIT",
+                        "message": f"next run in {remaining}s",
+                        "summary": "waiting",
+                    }
+                    display.update(snapshot)
+                    atomic_write_json(state_path, snapshot)
+                    last_shown_remaining = remaining
+
+                time.sleep(1)
 
         return 0
     finally:

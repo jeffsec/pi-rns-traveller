@@ -98,6 +98,8 @@ Important flags:
 - `--no-epd` console-only mode.
 - `--epd-driver auto|epd2in13_V3|epd2in13_V2|epd2in13` force panel driver.
 - `--epd-partial-every 5` force a full refresh after N partial refreshes (ghosting control).
+- `--check-interval-seconds 120` periodic run interval (default: 120s).
+- `--trigger-file /tmp/pi-rns-traveller.run-now` touch-file path for immediate run.
 - `--state-dir /path` persistent state/log directory.
 - `--continue-on-error` continue periodic checks after failures.
 
@@ -111,6 +113,12 @@ Durable appliance logs:
 
 - `state/history.db` SQLite run + per-target result history.
 - `state/state.json` latest appliance screen state.
+
+Manual run trigger while service is waiting:
+
+```bash
+touch /tmp/pi-rns-traveller.run-now
+```
 
 ## Systemd Autostart
 
@@ -132,4 +140,25 @@ Check status:
 ```bash
 systemctl status pi-rns-traveller.service --no-pager
 journalctl -u pi-rns-traveller.service -n 120 --no-pager
+```
+
+Change interval without editing repo files:
+
+```bash
+sudo systemctl edit pi-rns-traveller.service
+```
+
+Add:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/python3 /home/jferris/pi-rns-traveller/scripts/traveller_appliance.py --base-config-dir /home/jferris/.reticulum --ups-hat-c --gpsd --state-dir /home/jferris/pi-rns-traveller/state --check-interval-seconds 300 --trigger-file /tmp/pi-rns-traveller.run-now
+```
+
+Then apply:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pi-rns-traveller.service
 ```
