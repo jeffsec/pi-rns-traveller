@@ -1,7 +1,7 @@
 [Unit]
 Description=Pi RNS Traveller Appliance
-After=network-online.target hostapd.service dnsmasq.service
-Wants=network-online.target hostapd.service dnsmasq.service
+After=network-online.target NetworkManager.service
+Wants=network-online.target
 
 [Service]
 Type=simple

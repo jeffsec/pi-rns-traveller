@@ -1,9 +1,0 @@
-[Unit]
-Description=Pi RNS AP Health Check
-After=network-online.target hostapd.service dnsmasq.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/libexec/pi-rns-ap-healthcheck.sh {{AP_IFACE}} {{AP_CIDR}}
-

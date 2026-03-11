@@ -163,34 +163,78 @@ sudo systemctl daemon-reload
 sudo systemctl restart pi-rns-traveller.service
 ```
 
-## Field Networking (Always-On AP)
+## Field Networking (NetworkManager, Recoverable)
 
-For trail reliability, keep `wlan0` in AP mode all the time and use `eth0` (USB Ethernet dongle) for internet at home.
-
-What this setup installs:
-
-- `hostapd` AP on `wlan0`
-- `dnsmasq` DHCP/DNS for AP clients
-- `nftables` firewall + NAT from AP subnet to `eth0`
-- AP health-check timer (`pi-rns-ap-health.timer`) that self-heals hostapd/dnsmasq failures
+For trail reliability and easier recovery, this project now uses a NetworkManager-first AP setup.
 
 One-time setup on the Pi:
 
 ```bash
 cd ~/pi-rns-traveller
-chmod +x scripts/setup_pi_ap_mode.sh
-sudo ./scripts/setup_pi_ap_mode.sh \
+chmod +x scripts/setup_nm_ap_mode.sh
+sudo ./scripts/setup_nm_ap_mode.sh \
   --ssid "RNS-Traveller" \
   --passphrase "replace-with-strong-passphrase"
 ```
 
-Notes:
+What this config creates:
 
-- Newer setup supports systems with or without `dhcpcd.service`.
-- If an earlier run failed with `Failed to restart dhcpcd.service`, pull latest and rerun the setup script.
-- If `NetworkManager` is present, setup marks `wlan0` unmanaged to keep AP-only mode stable.
+- `traveller-ap` (Wi-Fi AP, autoconnect, `ipv4.method shared`)
+- `eth-dhcp` (Ethernet DHCP, autoconnect)
+- `eth-direct` (manual direct-cable fallback, no autoconnect)
 
-Then install/refresh traveller appliance service:
+Expected defaults:
+
+- AP SSH target: `10.42.0.1`
+- Direct-cable fallback profile: `eth-direct` with `192.168.77.1/24`
+- Manual traveller run trigger: `touch /tmp/pi-rns-traveller.run-now`
+
+Recovery commands:
+
+```bash
+nmcli con up traveller-ap
+nmcli con up eth-dhcp
+nmcli con up eth-direct
+nmcli -f DEVICE,TYPE,STATE,CONNECTION device
+ip -4 -br addr show wlan0 eth0
+```
+
+## Clean Deploy (Fresh SD)
+
+After first boot on a clean Raspberry Pi OS install:
+
+1. Enable SSH and log in.
+2. Install core packages and clone repo:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-pip
+cd ~
+git clone https://github.com/jeffsec/pi-rns-traveller.git
+cd pi-rns-traveller
+```
+
+3. Install your Reticulum/RNode CLI stack (`rnsd`, `rnprobe`, `rnodeconf`) using your standard method, then verify:
+
+```bash
+command -v rnsd rnprobe rnodeconf
+```
+
+4. Configure targets:
+
+```bash
+cp config/targets.example.txt config/targets.local.txt
+```
+
+5. Configure NetworkManager AP + recovery Ethernet:
+
+```bash
+sudo ./scripts/setup_nm_ap_mode.sh \
+  --ssid "RNS-Traveller" \
+  --passphrase "replace-with-strong-passphrase"
+```
+
+6. Install/start traveller appliance service:
 
 ```bash
 sudo cp deploy/pi-rns-traveller.service /etc/systemd/system/pi-rns-traveller.service
@@ -198,22 +242,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pi-rns-traveller.service
 ```
 
-Verify:
+7. Verify:
 
 ```bash
-ip -4 addr show wlan0
-systemctl status hostapd dnsmasq nftables pi-rns-ap-health.timer pi-rns-traveller.service --no-pager
-journalctl -u pi-rns-ap-health.service -n 60 --no-pager
+systemctl status pi-rns-traveller.service --no-pager
+journalctl -u pi-rns-traveller.service -n 120 --no-pager
+nmcli -f DEVICE,TYPE,STATE,CONNECTION device
 ```
-
-Expected defaults:
-
-- AP IP: `10.13.37.1/24`
-- DHCP clients: `10.13.37.50-10.13.37.150`
-- Manual run trigger: `touch /tmp/pi-rns-traveller.run-now`
-
-Home/dev behavior:
-
-- Keep AP running as normal.
-- Plug in Ethernet dongle to `eth0` for internet (updates/package installs/maintenance).
-- AP clients can use that uplink through NAT automatically.
