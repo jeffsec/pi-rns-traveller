@@ -70,10 +70,12 @@ If none are present, patching fails. In that case, add one in `~/.reticulum/conf
 What it does:
 
 - Shows `BOOTING`, `CHECKING`, `RESULTS`, and `ERROR` states.
+- Uses a full-screen dashboard layout with per-target status tiles.
 - Runs periodic probe cycles without SSH interaction.
 - Writes durable logs to SQLite with `WAL` + `synchronous=FULL`.
 - Writes last known state atomically to `state/state.json`.
 - Holds on `ERROR` until restart by default.
+- Prints detailed per-target progress and a full run summary to the console.
 
 Run once for testing:
 

@@ -83,6 +83,79 @@ def short_port(port: str | None) -> str:
     return Path(port).name[:24]
 
 
+def trim_ascii(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def build_cards(
+    targets: list[Target],
+    results: list[ProbeResult],
+    active_zero_index: int | None = None,
+) -> list[dict[str, str]]:
+    cards: list[dict[str, str]] = []
+    for index, target in enumerate(targets):
+        if index < len(results):
+            result = results[index]
+            state = "ok" if result.reachable else "fail"
+            detail = format_rtt(result.rtt_ms) if result.rtt_ms is not None else trim_ascii(result.reason, 10)
+        elif active_zero_index is not None and index == active_zero_index:
+            state = "active"
+            detail = "probing"
+        else:
+            state = "pending"
+            detail = "--"
+        cards.append(
+            {
+                "label": trim_ascii(target.label, 13),
+                "state": state,
+                "detail": detail,
+            }
+        )
+    return cards
+
+
+def print_console_results(
+    run_id: int,
+    chosen_port: str,
+    targets_path: Path,
+    started: dt.datetime,
+    results: list[ProbeResult],
+) -> None:
+    elapsed_s = (now_utc() - started).total_seconds()
+    total = len(results)
+    reachable = sum(1 for result in results if result.reachable)
+    unreachable = total - reachable
+
+    print(
+        f"RNS traveller appliance run#{run_id} | port={chosen_port} | targets-file={targets_path}",
+        flush=True,
+    )
+    print(
+        f"targets={total} reachable={reachable} unreachable={unreachable} elapsed={elapsed_s:.1f}s",
+        flush=True,
+    )
+    print("-" * 78, flush=True)
+    print("st  label                 recv/loss      rtt    hops  reason", flush=True)
+    print("-" * 78, flush=True)
+    for result in results:
+        st = "OK" if result.reachable else "NO"
+        recv_loss = f"{result.received}/{result.sent} {result.loss_pct:.0f}%"
+        hops_text = "-" if result.hops is None else str(result.hops)
+        print(
+            f"{st:<3}"
+            f"{trim_ascii(result.target.label, 20):<21}"
+            f"{recv_loss:<14}"
+            f"{format_rtt(result.rtt_ms):>9}  "
+            f"{hops_text:>4}  "
+            f"{trim_ascii(result.reason, 20)}",
+            flush=True,
+        )
+
+
 class ConsoleBackend:
     def __init__(self) -> None:
         self._last = ""
@@ -146,50 +219,150 @@ class EpaperBackend:
 
         raise RuntimeError(f"Unable to initialize Waveshare 2.13 ePaper driver: {last_exc}")
 
-    def _build_lines(self, snapshot: dict[str, Any]) -> list[str]:
-        stage = str(snapshot.get("stage", "?"))
-        line1 = f"{stage:<8}{ts_local()}"
+    def _text_size(self, draw: Any, text: str) -> tuple[int, int]:
+        if hasattr(draw, "textbbox"):
+            x0, y0, x1, y1 = draw.textbbox((0, 0), text, font=self.font)
+            return (x1 - x0, y1 - y0)
+        return draw.textsize(text, font=self.font)
 
-        batt = snapshot.get("battery_pct")
-        volt = snapshot.get("battery_v")
-        if batt is not None:
-            batt_str = f"BAT {batt:.0f}% {volt:.2f}V" if volt is not None else f"BAT {batt:.0f}%"
-        else:
-            batt_str = "BAT --"
+    def _fit_text(self, draw: Any, text: str, max_width: int) -> str:
+        fitted = text
+        while fitted and self._text_size(draw, fitted)[0] > max_width:
+            fitted = fitted[:-1]
+        if fitted == text:
+            return fitted
+        if len(fitted) >= 3:
+            fitted = fitted[:-3] + "..."
+        return fitted
 
-        lat = snapshot.get("lat")
-        lon = snapshot.get("lon")
-        gps = "GPS --"
-        if lat is not None and lon is not None:
-            gps = f"GPS {lat:.3f},{lon:.3f}"
+    def _grid_dims(self, count: int) -> tuple[int, int]:
+        if count <= 1:
+            return (1, 1)
+        if count == 2:
+            return (2, 1)
+        if count <= 4:
+            return (2, 2)
+        if count <= 6:
+            return (3, 2)
+        return (3, 3)
 
-        lines = [
-            line1,
-            batt_str,
-            gps,
-            f"PORT {short_port(snapshot.get('serial_port'))}",
-        ]
+    def _draw_cards(self, draw: Any, cards: list[dict[str, str]], top: int, empty_text: str) -> None:
+        if not cards:
+            draw.rectangle((4, top + 2, self.width - 5, self.height - 5), outline=0)
+            draw.text((8, top + 8), self._fit_text(draw, empty_text, self.width - 16), font=self.font, fill=0)
+            return
 
-        message = snapshot.get("message")
-        if message:
-            lines.append(str(message)[:34])
+        cols, rows = self._grid_dims(len(cards))
+        gap = 3
+        left = 3
+        right = self.width - 4
+        bottom = self.height - 4
+        area_w = max(right - left, 1)
+        area_h = max(bottom - top, 1)
+        cell_w = max((area_w - gap * (cols - 1)) // cols, 30)
+        cell_h = max((area_h - gap * (rows - 1)) // rows, 20)
 
-        summary = snapshot.get("summary")
-        if summary:
-            lines.append(str(summary)[:34])
+        max_cells = cols * rows
+        for idx, card in enumerate(cards[:max_cells]):
+            row = idx // cols
+            col = idx % cols
+            x0 = left + col * (cell_w + gap)
+            y0 = top + row * (cell_h + gap)
+            x1 = x0 + cell_w
+            y1 = y0 + cell_h
 
-        for row in snapshot.get("rows", [])[:3]:
-            lines.append(str(row)[:34])
+            state = str(card.get("state", "pending"))
+            fill = None
+            if state == "ok":
+                fill = 0
+            draw.rectangle((x0, y0, x1, y1), outline=0, fill=fill)
+            if state == "active":
+                draw.rectangle((x0 + 1, y0 + 1, x1 - 1, y1 - 1), outline=0)
 
-        return lines[:8]
+            text_fill = 255 if fill == 0 else 0
+            label = self._fit_text(draw, str(card.get("label", "-")), max(cell_w - 6, 10))
+            detail = self._fit_text(draw, str(card.get("detail", "--")), max(cell_w - 6, 10))
+
+            draw.text((x0 + 3, y0 + 2), label, font=self.font, fill=text_fill)
+            if cell_h >= 22:
+                draw.text((x0 + 3, y0 + 12), detail, font=self.font, fill=text_fill)
+
+            if state == "fail":
+                draw.line((x1 - 10, y0 + 3, x1 - 3, y0 + 10), fill=0)
+                draw.line((x1 - 3, y0 + 3, x1 - 10, y0 + 10), fill=0)
 
     def _render_image(self, snapshot: dict[str, Any]) -> Any:
         image = self.Image.new("1", (self.width, self.height), 255)
         draw = self.ImageDraw.Draw(image)
-        y = 2
-        for line in self._build_lines(snapshot):
-            draw.text((2, y), line, font=self.font, fill=0)
-            y += 14
+
+        stage = str(snapshot.get("stage", "?"))
+        header_h = 18
+        draw.rectangle((0, 0, self.width - 1, self.height - 1), outline=0)
+        draw.line((1, header_h, self.width - 2, header_h), fill=0)
+
+        draw.text((4, 4), "RNS Traveller", font=self.font, fill=0)
+
+        stage_text = trim_ascii(stage, 10)
+        stage_box_w = 72
+        sx0 = self.width - stage_box_w - 3
+        draw.rectangle((sx0, 2, self.width - 3, header_h - 2), outline=0, fill=0)
+        stage_text = self._fit_text(draw, stage_text, stage_box_w - 6)
+        draw.text((sx0 + 3, 4), stage_text, font=self.font, fill=255)
+
+        batt = snapshot.get("battery_pct")
+        volt = snapshot.get("battery_v")
+        if batt is not None and volt is not None:
+            batt_text = f"BAT {batt:.0f}% {volt:.2f}V"
+        elif batt is not None:
+            batt_text = f"BAT {batt:.0f}%"
+        else:
+            batt_text = "BAT --"
+
+        lat = snapshot.get("lat")
+        lon = snapshot.get("lon")
+        gps_text = "GPS --"
+        if lat is not None and lon is not None:
+            gps_text = f"GPS {lat:.3f},{lon:.3f}"
+
+        port_text = "PORT " + short_port(snapshot.get("serial_port"))
+        draw.text((4, 22), self._fit_text(draw, batt_text, 118), font=self.font, fill=0)
+        draw.text((4, 33), self._fit_text(draw, gps_text, 118), font=self.font, fill=0)
+        draw.text((123, 22), self._fit_text(draw, port_text, self.width - 128), font=self.font, fill=0)
+
+        total_targets = int(snapshot.get("total_targets") or 0)
+        reachable = int(snapshot.get("reachable") or 0)
+        unreachable = int(snapshot.get("unreachable") or 0)
+        status_text = f"OK {reachable}/{total_targets} NO {unreachable}"
+        draw.text((123, 33), self._fit_text(draw, status_text, self.width - 128), font=self.font, fill=0)
+
+        footer = str(snapshot.get("message") or snapshot.get("summary") or "")
+        if footer:
+            draw.text((4, 44), self._fit_text(draw, trim_ascii(footer, 45), self.width - 10), font=self.font, fill=0)
+
+        cards = snapshot.get("cards")
+        stage_upper = stage.upper()
+        empty_text = "No targets configured"
+        if stage_upper == "WAIT":
+            empty_text = "Waiting for next run"
+        elif stage_upper == "BOOTING":
+            empty_text = "Starting..."
+        elif stage_upper == "ERROR":
+            empty_text = "Error state - restart device"
+        if isinstance(cards, list):
+            norm_cards: list[dict[str, str]] = []
+            for item in cards:
+                if not isinstance(item, dict):
+                    continue
+                norm_cards.append(
+                    {
+                        "label": str(item.get("label", "-")),
+                        "state": str(item.get("state", "pending")),
+                        "detail": str(item.get("detail", "--")),
+                    }
+                )
+            self._draw_cards(draw, norm_cards, top=56, empty_text=empty_text)
+        else:
+            self._draw_cards(draw, [], top=56, empty_text=empty_text)
 
         if self.rotate in (90, 180, 270):
             image = image.rotate(self.rotate, expand=True, fillcolor=255)
@@ -467,6 +640,10 @@ def run_cycle(
         "message": "Preparing runtime",
         "serial_port": None,
         "rows": [],
+        "cards": [],
+        "total_targets": 0,
+        "reachable": 0,
+        "unreachable": 0,
     }
     display.update(snapshot, force=True)
     atomic_write_json(state_file, snapshot)
@@ -505,6 +682,10 @@ def run_cycle(
                 "lon": location.lon,
                 "battery_pct": battery.percent,
                 "battery_v": battery.voltage_v,
+                "cards": [],
+                "total_targets": 0,
+                "reachable": 0,
+                "unreachable": 0,
             }
         )
         display.update(snapshot)
@@ -528,21 +709,53 @@ def run_cycle(
         run_id = start_run_record(conn, started, chosen_port, location, battery)
         results: list[ProbeResult] = []
 
+        loc_text = "GPS --"
+        if location.lat is not None and location.lon is not None:
+            loc_text = f"GPS {location.lat:.6f},{location.lon:.6f}"
+        bat_text = "BAT --"
+        if battery.percent is not None and battery.voltage_v is not None:
+            bat_text = f"BAT {battery.percent:.0f}% {battery.voltage_v:.2f}V ({battery.source})"
+        elif battery.voltage_v is not None:
+            bat_text = f"BAT {battery.voltage_v:.2f}V ({battery.source})"
+        print(
+            f"run#{run_id} start | port={chosen_port} | targets={len(targets)} | targets-file={targets_path}",
+            flush=True,
+        )
+        print(f"{bat_text} | {loc_text}", flush=True)
+
         for index, target in enumerate(targets, start=1):
+            cards = build_cards(targets, results, active_zero_index=index - 1)
+            reachable = sum(1 for item in results if item.reachable)
+            unreachable = len(results) - reachable
+
             snapshot.update(
                 {
                     "stage": "CHECKING",
                     "message": f"{index}/{len(targets)} {target.label}",
                     "summary": f"run#{run_id}",
                     "rows": render_rows(results),
+                    "cards": cards,
+                    "total_targets": len(targets),
+                    "reachable": reachable,
+                    "unreachable": unreachable,
                 }
             )
             display.update(snapshot)
             atomic_write_json(state_file, snapshot)
 
+            print(f"[{index}/{len(targets)}] probing {target.label}", flush=True)
             result = probe_target(runtime_dir, target, args.probes, args.timeout, args.wait)
             results.append(result)
             record_probe_result(conn, run_id, index, result)
+
+            probe_metric = format_rtt(result.rtt_ms) if result.rtt_ms is not None else result.reason
+            hops_text = "-" if result.hops is None else str(result.hops)
+            recv_loss = f"{result.received}/{result.sent} {result.loss_pct:.0f}%"
+            probe_st = "OK" if result.reachable else "NO"
+            print(
+                f"  -> {probe_st} {target.label} recv/loss={recv_loss} rtt={probe_metric} hops={hops_text}",
+                flush=True,
+            )
 
         reachable = sum(1 for result in results if result.reachable)
         unreachable = len(results) - reachable
@@ -554,10 +767,15 @@ def run_cycle(
                 "message": f"{reachable}/{len(results)} reachable",
                 "summary": f"run#{run_id} complete",
                 "rows": render_rows(results),
+                "cards": build_cards(targets, results, active_zero_index=None),
+                "total_targets": len(results),
+                "reachable": reachable,
+                "unreachable": unreachable,
             }
         )
         display.update(snapshot, force=True)
         atomic_write_json(state_file, snapshot)
+        print_console_results(run_id, chosen_port, targets_path, started, results)
         return reachable, unreachable
 
     except Exception as exc:
@@ -570,6 +788,7 @@ def run_cycle(
                 "message": str(exc)[:48],
                 "summary": "Restart device",
                 "rows": [],
+                "cards": [],
             }
         )
         display.update(snapshot, force=True)
