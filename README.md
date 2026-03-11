@@ -184,6 +184,11 @@ sudo ./scripts/setup_pi_ap_mode.sh \
   --passphrase "replace-with-strong-passphrase"
 ```
 
+Notes:
+
+- Newer setup supports systems with or without `dhcpcd.service`.
+- If an earlier run failed with `Failed to restart dhcpcd.service`, pull latest and rerun the setup script.
+
 Then install/refresh traveller appliance service:
 
 ```bash

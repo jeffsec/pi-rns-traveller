@@ -14,6 +14,7 @@ COUNTRY_CODE="US"
 CHANNEL="6"
 SSID="RNS-Traveller"
 PASSPHRASE=""
+IP_BIN=""
 
 usage() {
     cat <<'EOF'
@@ -115,6 +116,12 @@ if [ ! -d "${REPO_DIR}/deploy/network" ]; then
     exit 1
 fi
 
+IP_BIN="$(command -v ip || true)"
+if [ -z "${IP_BIN}" ]; then
+    echo "ip command not found." >&2
+    exit 1
+fi
+
 render_template() {
     local template_path="$1"
     local output_path="$2"
@@ -129,6 +136,7 @@ render_template() {
         -e "s|{{CHANNEL}}|${CHANNEL}|g" \
         -e "s|{{SSID}}|${SSID}|g" \
         -e "s|{{PASSPHRASE}}|${PASSPHRASE}|g" \
+        -e "s|{{IP_BIN}}|${IP_BIN}|g" \
         "${template_path}" > "${output_path}"
 }
 
@@ -159,20 +167,16 @@ render_template \
     /etc/dnsmasq.d/pi-rns-traveller.conf
 
 echo "[4/9] Configuring static AP address in dhcpcd..."
-if [ ! -f /etc/dhcpcd.conf ]; then
-    echo "/etc/dhcpcd.conf not found; this script expects Raspberry Pi OS dhcpcd networking." >&2
-    exit 1
-fi
-
-tmp_dhcpcd="$(mktemp)"
-awk '
+if [ -f /etc/dhcpcd.conf ]; then
+    tmp_dhcpcd="$(mktemp)"
+    awk '
 BEGIN {skip=0}
 /^# BEGIN PI-RNS-TRAVELLER-AP$/ {skip=1; next}
 /^# END PI-RNS-TRAVELLER-AP$/ {skip=0; next}
 skip==0 {print}
 ' /etc/dhcpcd.conf > "${tmp_dhcpcd}"
 
-cat >> "${tmp_dhcpcd}" <<EOF
+    cat >> "${tmp_dhcpcd}" <<EOF
 
 # BEGIN PI-RNS-TRAVELLER-AP
 interface ${AP_IFACE}
@@ -181,8 +185,28 @@ interface ${AP_IFACE}
 # END PI-RNS-TRAVELLER-AP
 EOF
 
-install -m 0644 "${tmp_dhcpcd}" /etc/dhcpcd.conf
-rm -f "${tmp_dhcpcd}"
+    install -m 0644 "${tmp_dhcpcd}" /etc/dhcpcd.conf
+    rm -f "${tmp_dhcpcd}"
+else
+    echo "dhcpcd.conf not found; continuing with systemd AP address service only."
+fi
+
+echo "[4b/9] Installing static AP address service..."
+render_template \
+    "${REPO_DIR}/deploy/network/pi-rns-ap-addr.service.template" \
+    /etc/systemd/system/pi-rns-ap-addr.service
+
+mkdir -p /etc/systemd/system/hostapd.service.d /etc/systemd/system/dnsmasq.service.d
+cat > /etc/systemd/system/hostapd.service.d/pi-rns-ap.conf <<'EOF'
+[Unit]
+After=pi-rns-ap-addr.service
+Wants=pi-rns-ap-addr.service
+EOF
+cat > /etc/systemd/system/dnsmasq.service.d/pi-rns-ap.conf <<'EOF'
+[Unit]
+After=pi-rns-ap-addr.service
+Wants=pi-rns-ap-addr.service
+EOF
 
 echo "[5/9] Enabling IP forwarding..."
 mkdir -p /etc/sysctl.d
@@ -219,11 +243,14 @@ install -m 0644 "${REPO_DIR}/deploy/network/pi-rns-ap-health.timer" /etc/systemd
 echo "[8/9] Enabling services..."
 systemctl unmask hostapd || true
 systemctl disable --now wpa_supplicant@"${AP_IFACE}".service || true
-systemctl enable hostapd dnsmasq nftables pi-rns-ap-health.timer
+systemctl enable pi-rns-ap-addr.service hostapd dnsmasq nftables pi-rns-ap-health.timer
 
 echo "[9/9] Restarting networking stack..."
 systemctl daemon-reload
-systemctl restart dhcpcd
+if systemctl list-unit-files | grep -q '^dhcpcd\.service'; then
+    systemctl restart dhcpcd || true
+fi
+systemctl restart pi-rns-ap-addr.service
 systemctl restart nftables
 systemctl restart hostapd
 systemctl restart dnsmasq
@@ -239,4 +266,3 @@ echo "Next steps:"
 echo "  1) Connect phone/laptop to SSID '${SSID}'."
 echo "  2) SSH to: ssh jferris@${AP_CIDR%%/*}"
 echo "  3) Trigger immediate traveller run: touch /tmp/pi-rns-traveller.run-now"
-
