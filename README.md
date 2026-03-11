@@ -71,6 +71,7 @@ What it does:
 
 - Shows `BOOTING`, `CHECKING`, `RESULTS`, and `ERROR` states.
 - Uses a full-screen dashboard layout with per-target status tiles.
+- Tile details are compact by design (`PROBE`, `1.9s`, `TIMEOUT`, `FAIL`) for readability in small boxes.
 - Runs periodic probe cycles without SSH interaction.
 - Writes durable logs to SQLite with `WAL` + `synchronous=FULL`.
 - Writes last known state atomically to `state/state.json`.

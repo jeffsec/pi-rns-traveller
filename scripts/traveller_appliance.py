@@ -91,6 +91,33 @@ def trim_ascii(text: str, width: int) -> str:
     return text[: width - 3] + "..."
 
 
+def compact_reason(reason: str) -> str:
+    normalized = reason.strip().lower()
+    if not normalized:
+        return "FAIL"
+    if "path-timeout" in normalized or "timeout" in normalized:
+        return "TIMEOUT"
+    if "refused" in normalized:
+        return "REFUSED"
+    if "no path" in normalized or "no-path" in normalized:
+        return "NO PATH"
+    if "busy" in normalized:
+        return "BUSY"
+    if "radio" in normalized:
+        return "RADIO"
+    if "error" in normalized:
+        return "ERROR"
+    return "FAIL"
+
+
+def compact_probe_detail(result: ProbeResult) -> str:
+    if result.reachable and result.rtt_ms is not None:
+        if result.rtt_ms >= 1000:
+            return f"{(result.rtt_ms / 1000):.1f}s"
+        return f"{result.rtt_ms:.0f}ms"
+    return compact_reason(result.reason)
+
+
 def build_cards(
     targets: list[Target],
     results: list[ProbeResult],
@@ -101,10 +128,10 @@ def build_cards(
         if index < len(results):
             result = results[index]
             state = "ok" if result.reachable else "fail"
-            detail = format_rtt(result.rtt_ms) if result.rtt_ms is not None else trim_ascii(result.reason, 10)
+            detail = compact_probe_detail(result)
         elif active_zero_index is not None and index == active_zero_index:
             state = "active"
-            detail = "probing"
+            detail = "PROBE"
         else:
             state = "pending"
             detail = "--"
