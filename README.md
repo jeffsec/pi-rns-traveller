@@ -94,8 +94,15 @@ Important flags:
 
 - `--no-epd` console-only mode.
 - `--epd-driver auto|epd2in13_V3|epd2in13_V2|epd2in13` force panel driver.
+- `--epd-partial-every 5` force a full refresh after N partial refreshes (ghosting control).
 - `--state-dir /path` persistent state/log directory.
 - `--continue-on-error` continue periodic checks after failures.
+
+Display refresh behavior:
+
+- `CHECKING` and `WAIT` updates use partial refresh when supported.
+- `BOOTING`, `RESULTS`, and `ERROR` use full refresh.
+- State transitions force full refresh, and full refresh is also forced every `--epd-partial-every` partial updates.
 
 Durable appliance logs:
 

@@ -103,7 +103,7 @@ class ConsoleBackend:
 class EpaperBackend:
     DRIVER_CANDIDATES = ("epd2in13_V4", "epd2in13_V3", "epd2in13_V2", "epd2in13")
 
-    def __init__(self, requested_driver: str, rotate: int) -> None:
+    def __init__(self, requested_driver: str, rotate: int, partial_every: int) -> None:
         try:
             from PIL import Image, ImageDraw, ImageFont  # type: ignore
         except Exception as exc:
@@ -119,6 +119,10 @@ class EpaperBackend:
         self.width = int(getattr(self.epd, "height", 250))
         self.height = int(getattr(self.epd, "width", 122))
         self.font = self.ImageFont.load_default()
+        self.partial_every = max(int(partial_every), 1)
+        self.partial_updates = 0
+        self.refresh_mode = "full"
+        self.partial_ready = False
 
         if hasattr(self.epd, "Clear"):
             self.epd.Clear(0xFF)
@@ -179,7 +183,7 @@ class EpaperBackend:
 
         return lines[:8]
 
-    def render(self, snapshot: dict[str, Any]) -> None:
+    def _render_image(self, snapshot: dict[str, Any]) -> Any:
         image = self.Image.new("1", (self.width, self.height), 255)
         draw = self.ImageDraw.Draw(image)
         y = 2
@@ -189,8 +193,47 @@ class EpaperBackend:
 
         if self.rotate in (90, 180, 270):
             image = image.rotate(self.rotate, expand=True, fillcolor=255)
+        return image
 
+    def _display_full(self, image: Any) -> None:
+        if self.refresh_mode != "full":
+            self.epd.init()
+            self.refresh_mode = "full"
         self.epd.display(self.epd.getbuffer(image))
+        self.partial_ready = False
+        self.partial_updates = 0
+
+    def _display_partial(self, image: Any) -> bool:
+        if not hasattr(self.epd, "displayPartial"):
+            return False
+        if not hasattr(self.epd, "displayPartBaseImage"):
+            return False
+
+        if self.partial_updates >= self.partial_every:
+            return False
+
+        if self.refresh_mode != "partial":
+            if hasattr(self.epd, "init_fast"):
+                self.epd.init_fast()
+            else:
+                self.epd.init()
+            self.refresh_mode = "partial"
+            self.partial_ready = False
+
+        buffer = self.epd.getbuffer(image)
+        if not self.partial_ready:
+            self.epd.displayPartBaseImage(buffer)
+            self.partial_ready = True
+        else:
+            self.epd.displayPartial(buffer)
+        self.partial_updates += 1
+        return True
+
+    def render(self, snapshot: dict[str, Any], allow_partial: bool) -> None:
+        image = self._render_image(snapshot)
+        if allow_partial and self._display_partial(image):
+            return
+        self._display_full(image)
 
     def close(self) -> None:
         try:
@@ -201,14 +244,23 @@ class EpaperBackend:
 
 
 class Display:
-    def __init__(self, use_epd: bool, epd_driver: str, rotate: int) -> None:
+    PARTIAL_STAGES = {"CHECKING", "WAIT"}
+
+    def __init__(
+        self,
+        use_epd: bool,
+        epd_driver: str,
+        rotate: int,
+        epd_partial_every: int,
+    ) -> None:
         self.console = ConsoleBackend()
         self.epd: EpaperBackend | None = None
         self._last_payload = ""
+        self._last_stage = ""
 
         if use_epd:
             try:
-                self.epd = EpaperBackend(epd_driver, rotate)
+                self.epd = EpaperBackend(epd_driver, rotate, epd_partial_every)
                 self.console.render({"stage": "DISPLAY", "message": f"ePaper {self.epd.driver_name}"})
             except Exception as exc:
                 self.console.render({"stage": "DISPLAY", "message": f"fallback console ({exc})"})
@@ -221,7 +273,14 @@ class Display:
         self._last_payload = payload
         self.console.render(snapshot)
         if self.epd is not None:
-            self.epd.render(snapshot)
+            stage = str(snapshot.get("stage", ""))
+            allow_partial = (
+                not force
+                and stage in self.PARTIAL_STAGES
+                and stage == self._last_stage
+            )
+            self.epd.render(snapshot, allow_partial=allow_partial)
+            self._last_stage = stage
 
     def close(self) -> None:
         self.console.close()
@@ -572,6 +631,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-epd", action="store_true")
     parser.add_argument("--epd-driver", default="auto")
     parser.add_argument("--epd-rotate", type=int, default=0, choices=[0, 90, 180, 270])
+    parser.add_argument(
+        "--epd-partial-every",
+        type=int,
+        default=5,
+        help="Force a full ePaper refresh after this many partial updates (default: 5).",
+    )
     return parser.parse_args()
 
 
@@ -596,7 +661,12 @@ def main() -> int:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    display = Display(use_epd=not args.no_epd, epd_driver=args.epd_driver, rotate=args.epd_rotate)
+    display = Display(
+        use_epd=not args.no_epd,
+        epd_driver=args.epd_driver,
+        rotate=args.epd_rotate,
+        epd_partial_every=args.epd_partial_every,
+    )
     conn = ensure_database(db_path)
 
     try:
