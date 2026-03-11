@@ -162,3 +162,52 @@ Then apply:
 sudo systemctl daemon-reload
 sudo systemctl restart pi-rns-traveller.service
 ```
+
+## Field Networking (Always-On AP)
+
+For trail reliability, keep `wlan0` in AP mode all the time and use `eth0` (USB Ethernet dongle) for internet at home.
+
+What this setup installs:
+
+- `hostapd` AP on `wlan0`
+- `dnsmasq` DHCP/DNS for AP clients
+- `nftables` firewall + NAT from AP subnet to `eth0`
+- AP health-check timer (`pi-rns-ap-health.timer`) that self-heals hostapd/dnsmasq failures
+
+One-time setup on the Pi:
+
+```bash
+cd ~/pi-rns-traveller
+chmod +x scripts/setup_pi_ap_mode.sh
+sudo ./scripts/setup_pi_ap_mode.sh \
+  --ssid "RNS-Traveller" \
+  --passphrase "replace-with-strong-passphrase"
+```
+
+Then install/refresh traveller appliance service:
+
+```bash
+sudo cp deploy/pi-rns-traveller.service /etc/systemd/system/pi-rns-traveller.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now pi-rns-traveller.service
+```
+
+Verify:
+
+```bash
+ip -4 addr show wlan0
+systemctl status hostapd dnsmasq nftables pi-rns-ap-health.timer pi-rns-traveller.service --no-pager
+journalctl -u pi-rns-ap-health.service -n 60 --no-pager
+```
+
+Expected defaults:
+
+- AP IP: `10.13.37.1/24`
+- DHCP clients: `10.13.37.50-10.13.37.150`
+- Manual run trigger: `touch /tmp/pi-rns-traveller.run-now`
+
+Home/dev behavior:
+
+- Keep AP running as normal.
+- Plug in Ethernet dongle to `eth0` for internet (updates/package installs/maintenance).
+- AP clients can use that uplink through NAT automatically.

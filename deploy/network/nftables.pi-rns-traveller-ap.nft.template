@@ -1,0 +1,41 @@
+table inet pi_rns_filter {
+    chain input {
+        type filter hook input priority 0;
+        policy drop;
+
+        iifname "lo" accept
+        ct state established,related accept
+
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        iifname "{{AP_IFACE}}" tcp dport 22 accept
+        iifname "{{UPLINK_IFACE}}" tcp dport 22 accept
+
+        iifname "{{AP_IFACE}}" udp dport {67,68,53} accept
+        iifname "{{AP_IFACE}}" tcp dport 53 accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0;
+        policy drop;
+
+        ct state established,related accept
+        iifname "{{AP_IFACE}}" oifname "{{UPLINK_IFACE}}" accept
+        iifname "{{UPLINK_IFACE}}" oifname "{{AP_IFACE}}" ct state established,related accept
+    }
+
+    chain output {
+        type filter hook output priority 0;
+        policy accept;
+    }
+}
+
+table ip pi_rns_nat {
+    chain postrouting {
+        type nat hook postrouting priority 100;
+        policy accept;
+        oifname "{{UPLINK_IFACE}}" ip saddr {{AP_SUBNET}} masquerade
+    }
+}
+

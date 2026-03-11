@@ -1,0 +1,8 @@
+interface={{AP_IFACE}}
+bind-dynamic
+domain-needed
+bogus-priv
+dhcp-range={{DHCP_START}},{{DHCP_END}},255.255.255.0,24h
+dhcp-option=option:router,{{AP_IP}}
+dhcp-option=option:dns-server,{{AP_IP}}
+

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Pi RNS AP health check periodically
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=120
+Unit=pi-rns-ap-health.service
+AccuracySec=15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
