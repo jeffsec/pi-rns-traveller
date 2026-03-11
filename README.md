@@ -99,6 +99,7 @@ Important flags:
 - `--epd-driver auto|epd2in13_V3|epd2in13_V2|epd2in13` force panel driver.
 - `--epd-partial-every 5` force a full refresh after N partial refreshes (ghosting control).
 - `--check-interval-seconds 120` periodic run interval (default: 120s).
+- `--results-hold-seconds 30` keep RESULTS visible before WAIT screen (counts against interval).
 - `--trigger-file /tmp/pi-rns-traveller.run-now` touch-file path for immediate run.
 - `--state-dir /path` persistent state/log directory.
 - `--continue-on-error` continue periodic checks after failures.
@@ -153,7 +154,7 @@ Add:
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/bin/python3 /home/jferris/pi-rns-traveller/scripts/traveller_appliance.py --base-config-dir /home/jferris/.reticulum --ups-hat-c --gpsd --state-dir /home/jferris/pi-rns-traveller/state --check-interval-seconds 300 --trigger-file /tmp/pi-rns-traveller.run-now
+ExecStart=/usr/bin/python3 /home/jferris/pi-rns-traveller/scripts/traveller_appliance.py --base-config-dir /home/jferris/.reticulum --epd-driver epd2in13_V4 --ups-hat-c --gpsd --state-dir /home/jferris/pi-rns-traveller/state --check-interval-seconds 300 --results-hold-seconds 45 --trigger-file /tmp/pi-rns-traveller.run-now
 ```
 
 Then apply:

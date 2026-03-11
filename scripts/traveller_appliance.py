@@ -24,7 +24,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from traveller_probe import (
     DEFAULT_TARGETS_FILE,
@@ -95,6 +95,32 @@ def consume_trigger_file(path: Path) -> bool:
     except OSError as exc:
         print(f"could not consume trigger file {path}: {exc}", flush=True)
         return False
+
+
+def sleep_with_trigger(
+    duration_seconds: int,
+    trigger_file: Path,
+    stop_requested: Callable[[], bool],
+    tick: Callable[[int], None] | None = None,
+) -> bool:
+    deadline = time.monotonic() + max(int(duration_seconds), 0)
+    last_remaining: int | None = None
+
+    while not stop_requested():
+        if consume_trigger_file(trigger_file):
+            return True
+
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            return False
+
+        if tick is not None and remaining != last_remaining:
+            tick(remaining)
+            last_remaining = remaining
+
+        time.sleep(1)
+
+    return False
 
 
 def trim_ascii(text: str, width: int) -> str:
@@ -881,6 +907,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-file", default="state.json")
     parser.add_argument("--check-interval-seconds", type=int, default=120)
     parser.add_argument(
+        "--results-hold-seconds",
+        type=int,
+        default=30,
+        help=(
+            "Keep RESULTS screen visible for this many seconds before WAIT screen "
+            "(counts toward check interval)."
+        ),
+    )
+    parser.add_argument(
         "--trigger-file",
         default="/tmp/pi-rns-traveller.run-now",
         help="Touch this file to trigger an immediate run while waiting.",
@@ -935,7 +970,10 @@ def main() -> int:
     )
     conn = ensure_database(db_path)
     print(
-        f"appliance config: interval={max(int(args.check_interval_seconds), 1)}s trigger_file={trigger_file}",
+        "appliance config: "
+        f"interval={max(int(args.check_interval_seconds), 1)}s "
+        f"results_hold={max(int(args.results_hold_seconds), 0)}s "
+        f"trigger_file={trigger_file}",
         flush=True,
     )
 
@@ -957,18 +995,18 @@ def main() -> int:
                 break
 
             wait_s = max(int(args.check_interval_seconds), 1)
-            snapshot = {
-                "stage": "WAIT",
-                "message": f"next run in {wait_s}s",
-                "summary": "waiting",
-            }
-            display.update(snapshot, force=True)
-            atomic_write_json(state_path, snapshot)
+            hold_s = min(max(int(args.results_hold_seconds), 0), wait_s)
 
-            deadline = time.monotonic() + wait_s
-            last_shown_remaining: int | None = wait_s
-            while not stop_requested:
-                if consume_trigger_file(trigger_file):
+            if hold_s > 0:
+                print(f"holding RESULTS screen for {hold_s}s", flush=True)
+                was_triggered = sleep_with_trigger(
+                    hold_s,
+                    trigger_file,
+                    stop_requested=lambda: stop_requested,
+                )
+                if stop_requested:
+                    break
+                if was_triggered:
                     print(f"manual trigger received ({trigger_file}), running now", flush=True)
                     snapshot = {
                         "stage": "WAIT",
@@ -977,27 +1015,54 @@ def main() -> int:
                     }
                     display.update(snapshot)
                     atomic_write_json(state_path, snapshot)
-                    break
+                    continue
 
-                remaining = int(deadline - time.monotonic())
-                if remaining <= 0:
-                    break
+            remaining_wait_s = wait_s - hold_s
+            if remaining_wait_s <= 0:
+                continue
 
+            snapshot = {
+                "stage": "WAIT",
+                "message": f"next run in {remaining_wait_s}s",
+                "summary": "waiting",
+            }
+            display.update(snapshot, force=True)
+            atomic_write_json(state_path, snapshot)
+            last_announced_remaining = remaining_wait_s
+
+            def wait_tick(remaining: int) -> None:
+                nonlocal last_announced_remaining
                 should_refresh_wait = (
-                    remaining != last_shown_remaining
+                    remaining != last_announced_remaining
                     and (remaining <= 10 or remaining % 10 == 0)
                 )
                 if should_refresh_wait:
-                    snapshot = {
+                    wait_snapshot = {
                         "stage": "WAIT",
                         "message": f"next run in {remaining}s",
                         "summary": "waiting",
                     }
-                    display.update(snapshot)
-                    atomic_write_json(state_path, snapshot)
-                    last_shown_remaining = remaining
+                    display.update(wait_snapshot)
+                    atomic_write_json(state_path, wait_snapshot)
+                    last_announced_remaining = remaining
 
-                time.sleep(1)
+            was_triggered = sleep_with_trigger(
+                remaining_wait_s,
+                trigger_file,
+                stop_requested=lambda: stop_requested,
+                tick=wait_tick,
+            )
+            if stop_requested:
+                break
+            if was_triggered:
+                print(f"manual trigger received ({trigger_file}), running now", flush=True)
+                snapshot = {
+                    "stage": "WAIT",
+                    "message": "manual trigger",
+                    "summary": "running now",
+                }
+                display.update(snapshot)
+                atomic_write_json(state_path, snapshot)
 
         return 0
     finally:
