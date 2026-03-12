@@ -44,6 +44,12 @@ RTT_RE = re.compile(
     r"Round-trip time is\s+([0-9.]+)\s+(milliseconds|seconds)\s+over\s+(\d+)\s+hop",
     re.IGNORECASE,
 )
+RSSI_RE = re.compile(r"(?:\[)?RSSI\s+(-?[0-9]+(?:\.[0-9]+)?)\s*dBm(?:\])?", re.IGNORECASE)
+SNR_RE = re.compile(r"(?:\[)?SNR\s+(-?[0-9]+(?:\.[0-9]+)?)\s*dB(?:\])?", re.IGNORECASE)
+LINK_QUALITY_RE = re.compile(
+    r"(?:\[)?Link\s+Quality\s+([0-9]+(?:\.[0-9]+)?)%(?:\])?",
+    re.IGNORECASE,
+)
 HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 DEFAULT_TARGETS_FILE = "config/targets.txt"
 LOCAL_TARGETS_FILE = Path("config/targets.local.txt")
@@ -64,6 +70,9 @@ class ProbeResult:
     loss_pct: float
     rtt_ms: float | None
     hops: int | None
+    rssi_dbm: float | None
+    snr_db: float | None
+    link_quality_pct: float | None
     reachable: bool
     reason: str
     exit_code: int
@@ -288,6 +297,9 @@ def append_history_rows(
         "loss_pct",
         "rtt_ms",
         "hops",
+        "rssi_dbm",
+        "snr_db",
+        "link_quality_pct",
         "reason",
         "exit_code",
     ]
@@ -321,6 +333,9 @@ def append_history_rows(
                     "loss_pct": f"{result.loss_pct:.2f}",
                     "rtt_ms": "" if result.rtt_ms is None else f"{result.rtt_ms:.3f}",
                     "hops": "" if result.hops is None else result.hops,
+                    "rssi_dbm": "" if result.rssi_dbm is None else f"{result.rssi_dbm:.1f}",
+                    "snr_db": "" if result.snr_db is None else f"{result.snr_db:.2f}",
+                    "link_quality_pct": "" if result.link_quality_pct is None else f"{result.link_quality_pct:.1f}",
                     "reason": result.reason,
                     "exit_code": result.exit_code,
                 }
@@ -627,6 +642,9 @@ def parse_probe_result(target: Target, output: str, exit_code: int) -> ProbeResu
     loss = 100.0
     rtt_ms: float | None = None
     hops: int | None = None
+    rssi_dbm: float | None = None
+    snr_db: float | None = None
+    link_quality_pct: float | None = None
     reason = "unknown"
 
     sent_match = SENT_RECV_RE.search(clean)
@@ -641,6 +659,18 @@ def parse_probe_result(target: Target, output: str, exit_code: int) -> ProbeResu
         unit = rtt_match.group(2).lower()
         hops = int(rtt_match.group(3))
         rtt_ms = rtt_value * 1000 if "second" in unit else rtt_value
+
+    rssi_match = RSSI_RE.search(clean)
+    if rssi_match:
+        rssi_dbm = float(rssi_match.group(1))
+
+    snr_match = SNR_RE.search(clean)
+    if snr_match:
+        snr_db = float(snr_match.group(1))
+
+    lq_match = LINK_QUALITY_RE.search(clean)
+    if lq_match:
+        link_quality_pct = float(lq_match.group(1))
 
     lower = clean.lower()
     if received > 0:
@@ -668,6 +698,9 @@ def parse_probe_result(target: Target, output: str, exit_code: int) -> ProbeResu
         loss_pct=loss,
         rtt_ms=rtt_ms,
         hops=hops,
+        rssi_dbm=rssi_dbm,
+        snr_db=snr_db,
+        link_quality_pct=link_quality_pct,
         reachable=reachable,
         reason=reason,
         exit_code=exit_code,
@@ -738,6 +771,36 @@ def format_rtt(rtt_ms: float | None) -> str:
     return f"{rtt_ms:.1f}ms"
 
 
+def format_rf_quality(
+    result: ProbeResult,
+    *,
+    include_link_quality: bool = True,
+) -> str:
+    parts: list[str] = []
+    if result.rssi_dbm is not None:
+        parts.append(f"rssi={result.rssi_dbm:.0f}dBm")
+    if result.snr_db is not None:
+        parts.append(f"snr={result.snr_db:.1f}dB")
+    if include_link_quality and result.link_quality_pct is not None:
+        parts.append(f"lq={result.link_quality_pct:.0f}%")
+    return " ".join(parts)
+
+
+def format_rf_quality_compact(
+    result: ProbeResult,
+    *,
+    include_link_quality: bool = False,
+) -> str:
+    parts: list[str] = []
+    if result.rssi_dbm is not None:
+        parts.append(f"R{result.rssi_dbm:.0f}")
+    if result.snr_db is not None:
+        parts.append(f"S{result.snr_db:.1f}")
+    if include_link_quality and result.link_quality_pct is not None:
+        parts.append(f"L{result.link_quality_pct:.0f}")
+    return " ".join(parts)
+
+
 def trim(text: str, width: int) -> str:
     if len(text) <= width:
         return text
@@ -757,18 +820,20 @@ def summarize(port: str, elapsed_s: float, results: Iterable[ProbeResult]) -> No
         f"targets={total} reachable={reachable} unreachable={unreachable} elapsed={elapsed_s:.1f}s"
     )
     print("-" * 78)
-    print("st  label                 recv/loss      rtt    hops  reason")
+    print("st  label                 recv/loss      rtt    hops  rf                   reason")
     print("-" * 78)
     for result in result_list:
         status = "OK" if result.reachable else "NO"
         recv_loss = f"{result.received}/{result.sent} {result.loss_pct:.0f}%"
         hops_text = "-" if result.hops is None else str(result.hops)
+        rf_text = format_rf_quality(result)
         print(
             f"{status:<3}"
             f"{trim(result.target.label, 20):<21}"
             f"{recv_loss:<14}"
             f"{format_rtt(result.rtt_ms):>9}  "
             f"{hops_text:>4}  "
+            f"{trim(rf_text or '-', 20):<21}"
             f"{trim(result.reason, 20)}"
         )
 

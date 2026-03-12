@@ -34,6 +34,8 @@ from traveller_probe import (
     detect_serial_port,
     ensure_runtime_config,
     extract_configured_serial_port,
+    format_rf_quality,
+    format_rf_quality_compact,
     format_rtt,
     load_targets,
     parse_probe_result,
@@ -151,10 +153,14 @@ def compact_reason(reason: str) -> str:
 
 
 def compact_probe_detail(result: ProbeResult) -> str:
-    if result.reachable and result.rtt_ms is not None:
-        if result.rtt_ms >= 1000:
-            return f"{(result.rtt_ms / 1000):.1f}s"
-        return f"{result.rtt_ms:.0f}ms"
+    if result.reachable:
+        rf_text = format_rf_quality_compact(result, include_link_quality=True)
+        if rf_text:
+            return rf_text
+        if result.rtt_ms is not None:
+            if result.rtt_ms >= 1000:
+                return f"{(result.rtt_ms / 1000):.1f}s"
+            return f"{result.rtt_ms:.0f}ms"
     return compact_reason(result.reason)
 
 
@@ -206,18 +212,20 @@ def print_console_results(
         flush=True,
     )
     print("-" * 78, flush=True)
-    print("st  label                 recv/loss      rtt    hops  reason", flush=True)
+    print("st  label                 recv/loss      rtt    hops  rf                   reason", flush=True)
     print("-" * 78, flush=True)
     for result in results:
         st = "OK" if result.reachable else "NO"
         recv_loss = f"{result.received}/{result.sent} {result.loss_pct:.0f}%"
         hops_text = "-" if result.hops is None else str(result.hops)
+        rf_text = format_rf_quality(result)
         print(
             f"{st:<3}"
             f"{trim_ascii(result.target.label, 20):<21}"
             f"{recv_loss:<14}"
             f"{format_rtt(result.rtt_ms):>9}  "
             f"{hops_text:>4}  "
+            f"{trim_ascii(rf_text or '-', 20):<21}"
             f"{trim_ascii(result.reason, 20)}",
             flush=True,
         )
@@ -573,12 +581,25 @@ def ensure_database(db_path: Path) -> sqlite3.Connection:
             loss_pct REAL NOT NULL,
             rtt_ms REAL,
             hops INTEGER,
+            rssi_dbm REAL,
+            snr_db REAL,
+            link_quality_pct REAL,
             reason TEXT,
             exit_code INTEGER NOT NULL,
             FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE
         );
         """
     )
+    existing_probe_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(probe_results);").fetchall()
+    }
+    for col_name, col_type in (
+        ("rssi_dbm", "REAL"),
+        ("snr_db", "REAL"),
+        ("link_quality_pct", "REAL"),
+    ):
+        if col_name not in existing_probe_columns:
+            conn.execute(f"ALTER TABLE probe_results ADD COLUMN {col_name} {col_type};")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_probe_results_run ON probe_results(run_id);")
     conn.commit()
     return conn
@@ -621,8 +642,9 @@ def record_probe_result(conn: sqlite3.Connection, run_id: int, index: int, resul
         """
         INSERT INTO probe_results (
             run_id, ts_utc, target_index, label, full_name, destination_hash,
-            reachable, sent, received, loss_pct, rtt_ms, hops, reason, exit_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            reachable, sent, received, loss_pct, rtt_ms, hops,
+            rssi_dbm, snr_db, link_quality_pct, reason, exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
         (
             run_id,
@@ -637,6 +659,9 @@ def record_probe_result(conn: sqlite3.Connection, run_id: int, index: int, resul
             result.loss_pct,
             result.rtt_ms,
             result.hops,
+            result.rssi_dbm,
+            result.snr_db,
+            result.link_quality_pct,
             result.reason,
             result.exit_code,
         ),
@@ -714,7 +739,11 @@ def render_rows(results: list[ProbeResult]) -> list[str]:
     rows: list[str] = []
     for result in results[:3]:
         st = "OK" if result.reachable else "NO"
-        metric = format_rtt(result.rtt_ms) if result.rtt_ms is not None else result.reason
+        rf_text = format_rf_quality_compact(result, include_link_quality=False)
+        if result.reachable and rf_text:
+            metric = rf_text
+        else:
+            metric = format_rtt(result.rtt_ms) if result.rtt_ms is not None else result.reason
         rows.append(f"{st} {result.target.label} {metric}")
     return rows
 
@@ -853,9 +882,11 @@ def run_cycle(
             probe_metric = format_rtt(result.rtt_ms) if result.rtt_ms is not None else result.reason
             hops_text = "-" if result.hops is None else str(result.hops)
             recv_loss = f"{result.received}/{result.sent} {result.loss_pct:.0f}%"
+            rf_text = format_rf_quality(result) or "-"
             probe_st = "OK" if result.reachable else "NO"
             print(
-                f"  -> {probe_st} {target.label} recv/loss={recv_loss} rtt={probe_metric} hops={hops_text}",
+                f"  -> {probe_st} {target.label} recv/loss={recv_loss} "
+                f"rtt={probe_metric} hops={hops_text} rf={rf_text}",
                 flush=True,
             )
 
