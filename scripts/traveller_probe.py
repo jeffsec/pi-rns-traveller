@@ -28,7 +28,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 SERIAL_TYPE_NAMES = {"rnodeinterface", "kissinterface", "ax25kissinterface"}
 TYPE_RE = re.compile(r"^(\s*)type\s*=\s*([A-Za-z0-9_]+)\s*$")
@@ -53,6 +53,7 @@ LINK_QUALITY_RE = re.compile(
 HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 DEFAULT_TARGETS_FILE = "config/targets.txt"
 LOCAL_TARGETS_FILE = Path("config/targets.local.txt")
+INTERFACE_HEADER_RE = re.compile(r"^\s*\[\[(.+?)\]\]\s*$")
 
 
 @dataclass
@@ -465,6 +466,179 @@ def extract_configured_serial_port(config_path: Path) -> str | None:
             return port
 
     return None
+
+
+def parse_boolish(value: str | None, default: bool = True) -> bool:
+    if value is None:
+        return default
+    lowered = value.strip().strip("\"'").lower()
+    if lowered in {"yes", "true", "1", "on"}:
+        return True
+    if lowered in {"no", "false", "0", "off"}:
+        return False
+    return default
+
+
+def _parse_interface_block_name(header_line: str) -> str | None:
+    match = INTERFACE_HEADER_RE.match(header_line)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def enabled_serial_interface_names(config_path: Path) -> list[str]:
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=False)
+    current_block_name: str | None = None
+    current_block_lines: list[str] = []
+    names: list[str] = []
+
+    def process_block(block_name: str | None, block_lines: list[str]) -> None:
+        if not block_name:
+            return
+        iface_type: str | None = None
+        enabled_value: str | None = None
+        for line in block_lines:
+            type_match = TYPE_RE.match(line)
+            if type_match:
+                iface_type = type_match.group(2).strip().lower()
+                continue
+            enabled_match = ENABLED_RE.match(line)
+            if enabled_match:
+                enabled_value = line.split("=", 1)[1].strip()
+        if iface_type in SERIAL_TYPE_NAMES and parse_boolish(enabled_value, default=True):
+            names.append(block_name)
+
+    for line in lines:
+        block_name = _parse_interface_block_name(line)
+        if block_name is not None:
+            process_block(current_block_name, current_block_lines)
+            current_block_name = block_name
+            current_block_lines = []
+        elif current_block_name is not None:
+            current_block_lines.append(line)
+
+    process_block(current_block_name, current_block_lines)
+    return names
+
+
+def read_rnstatus_json(config_dir: Path, timeout_seconds: float) -> dict[str, Any] | None:
+    command_timeout = max(timeout_seconds, 0.2)
+    try:
+        run = subprocess.run(  # noqa: S603
+            ["rnstatus", "--json", "--all", "--config", str(config_dir)],
+            capture_output=True,
+            text=True,
+            timeout=command_timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if run.returncode != 0:
+        return None
+
+    payload = (run.stdout or "").strip()
+    if not payload:
+        return None
+
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def serial_interfaces_ready(
+    stats: dict[str, Any],
+    expected_names: list[str],
+) -> tuple[bool, str]:
+    interfaces = stats.get("interfaces")
+    if not isinstance(interfaces, list):
+        return False, "rnstatus did not return interface stats"
+
+    serial_ifaces: list[dict[str, Any]] = []
+    for interface in interfaces:
+        if not isinstance(interface, dict):
+            continue
+        iface_type = str(interface.get("type", "")).lower()
+        if iface_type in SERIAL_TYPE_NAMES:
+            serial_ifaces.append(interface)
+
+    if expected_names:
+        expected = {name.lower() for name in expected_names}
+        filtered = [
+            interface
+            for interface in serial_ifaces
+            if str(interface.get("short_name", "")).lower() in expected
+            or str(interface.get("name", "")).lower() in expected
+        ]
+        if filtered:
+            serial_ifaces = filtered
+
+    if not serial_ifaces:
+        return False, "serial interface not listed yet"
+
+    online = [interface for interface in serial_ifaces if bool(interface.get("status"))]
+    if online:
+        names = ", ".join(str(interface.get("short_name", "?")) for interface in online)
+        return True, f"online: {names}"
+
+    names = ", ".join(str(interface.get("short_name", "?")) for interface in serial_ifaces)
+    return False, f"offline: {names}"
+
+
+def wait_for_rnsd_ready(
+    config_dir: Path,
+    runtime_cfg: Path,
+    rnsd_proc: subprocess.Popen[str],
+    startup_seconds: float,
+    ready_timeout_seconds: float,
+    ready_poll_seconds: float,
+) -> tuple[bool, str, float]:
+    started = time.monotonic()
+
+    startup_wait = max(startup_seconds, 0.0)
+    if startup_wait > 0:
+        time.sleep(startup_wait)
+
+    if rnsd_proc.poll() is not None:
+        waited = time.monotonic() - started
+        return False, "rnsd exited during startup wait", waited
+
+    if not command_exists("rnstatus"):
+        waited = time.monotonic() - started
+        return True, "rnstatus unavailable; skipped readiness gate", waited
+
+    ready_timeout = max(ready_timeout_seconds, 0.0)
+    if ready_timeout == 0:
+        waited = time.monotonic() - started
+        return True, "readiness timeout disabled", waited
+
+    poll_seconds = max(ready_poll_seconds, 0.1)
+    expected_serial_names = enabled_serial_interface_names(runtime_cfg)
+    deadline = time.monotonic() + ready_timeout
+    last_detail = "waiting for rnstatus"
+
+    while time.monotonic() < deadline:
+        if rnsd_proc.poll() is not None:
+            waited = time.monotonic() - started
+            return False, "rnsd exited before readiness", waited
+
+        stats = read_rnstatus_json(config_dir, timeout_seconds=poll_seconds + 0.8)
+        if stats is not None:
+            ready, detail = serial_interfaces_ready(stats, expected_serial_names)
+            last_detail = detail
+            if ready:
+                waited = time.monotonic() - started
+                return True, detail, waited
+        else:
+            last_detail = "rnstatus not ready"
+
+        time.sleep(poll_seconds)
+
+    waited = time.monotonic() - started
+    return False, f"timeout waiting for serial interface readiness ({last_detail})", waited
 
 
 def process_interface_block(block: list[str], serial_port: str) -> tuple[list[str], bool]:
@@ -901,6 +1075,7 @@ def run_probes(
             print(output.strip() or "(no output)")
 
         parsed = parse_probe_result(target, output, run.returncode)
+
         results.append(parsed)
         if show_progress:
             probe_status = "OK" if parsed.reachable else "NO"
@@ -972,7 +1147,19 @@ def main() -> int:
         "--startup-seconds",
         type=float,
         default=4.0,
-        help="Seconds to wait for rnsd startup.",
+        help="Minimum seconds to wait before checking readiness.",
+    )
+    parser.add_argument(
+        "--ready-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="Maximum seconds to wait for serial interfaces to report online via rnstatus.",
+    )
+    parser.add_argument(
+        "--ready-poll-seconds",
+        type=float,
+        default=0.5,
+        help="Polling interval for readiness checks.",
     )
     parser.add_argument(
         "--list-ports",
@@ -1005,12 +1192,10 @@ def main() -> int:
             print(f" {marker} {candidate}")
         return 0
 
-    if not command_exists("rnsd"):
-        eprint("rnsd not found in PATH.")
-        return 127
-    if not command_exists("rnprobe"):
-        eprint("rnprobe not found in PATH.")
-        return 127
+    for required_cmd in ("rnsd", "rnprobe", "rnstatus"):
+        if not command_exists(required_cmd):
+            eprint(f"{required_cmd} not found in PATH.")
+            return 127
 
     requested_targets_path = Path(args.targets_file).expanduser()
     targets_path = resolve_targets_file(args.targets_file)
@@ -1094,17 +1279,26 @@ def main() -> int:
         rnsd_log = runtime_dir / "rnsd.log"
         status("traveller_probe: starting rnsd")
         rnsd_proc = start_rnsd(runtime_dir, rnsd_log)
-        startup_wait = max(args.startup_seconds, 0)
-        if startup_wait > 0:
-            status(f"traveller_probe: waiting {startup_wait:.1f}s for rnsd startup")
-            time.sleep(startup_wait)
-
-        if rnsd_proc.poll() is not None:
+        status(
+            "traveller_probe: waiting for rnsd readiness "
+            f"(startup={max(args.startup_seconds, 0):.1f}s, "
+            f"timeout={max(args.ready_timeout_seconds, 0):.1f}s)"
+        )
+        ready, ready_detail, waited_s = wait_for_rnsd_ready(
+            config_dir=runtime_dir,
+            runtime_cfg=runtime_cfg,
+            rnsd_proc=rnsd_proc,
+            startup_seconds=args.startup_seconds,
+            ready_timeout_seconds=args.ready_timeout_seconds,
+            ready_poll_seconds=args.ready_poll_seconds,
+        )
+        if not ready:
             log_tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
-            eprint("rnsd exited early. Recent log lines:")
+            eprint(f"rnsd not ready after {waited_s:.1f}s ({ready_detail}). Recent log lines:")
             for line in log_tail:
                 eprint(f"  {line}")
             return 3
+        status(f"traveller_probe: rnsd ready after {waited_s:.1f}s ({ready_detail})")
 
         status("traveller_probe: running probes")
         results = run_probes(

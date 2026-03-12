@@ -44,6 +44,7 @@ from traveller_probe import (
     resolve_targets_file,
     resolve_location,
     start_rnsd,
+    wait_for_rnsd_ready,
 )
 
 
@@ -820,13 +821,19 @@ def run_cycle(
 
         rnsd_log = runtime_dir / "rnsd.log"
         rnsd_proc = start_rnsd(runtime_dir, rnsd_log)
-        if args.startup_seconds > 0:
-            time.sleep(args.startup_seconds)
-
-        if rnsd_proc.poll() is not None:
-            tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-4:]
-            message = tail[-1] if tail else "rnsd exited early"
-            raise RuntimeError(message)
+        ready, ready_detail, waited_s = wait_for_rnsd_ready(
+            config_dir=runtime_dir,
+            runtime_cfg=runtime_cfg,
+            rnsd_proc=rnsd_proc,
+            startup_seconds=args.startup_seconds,
+            ready_timeout_seconds=args.ready_timeout_seconds,
+            ready_poll_seconds=args.ready_poll_seconds,
+        )
+        if not ready:
+            tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
+            tail_msg = " | ".join(tail) if tail else "rnsd log empty"
+            raise RuntimeError(f"rnsd not ready after {waited_s:.1f}s ({ready_detail}); {tail_msg[:120]}")
+        print(f"rnsd ready after {waited_s:.1f}s ({ready_detail})", flush=True)
 
         targets_path = resolve_targets_file(args.targets_file)
         targets = load_targets(targets_path, args.default_full_name)
@@ -963,6 +970,18 @@ def parse_args() -> argparse.Namespace:
         help="Hard cap in seconds for each rnprobe process (0 = auto-derived).",
     )
     parser.add_argument("--startup-seconds", type=float, default=3.0)
+    parser.add_argument(
+        "--ready-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="Maximum seconds to wait for serial interfaces to report online via rnstatus.",
+    )
+    parser.add_argument(
+        "--ready-poll-seconds",
+        type=float,
+        default=0.5,
+        help="Polling interval for readiness checks.",
+    )
 
     parser.add_argument("--gpsd", action="store_true")
     parser.add_argument("--gpsd-timeout", type=float, default=6.0)
@@ -1019,7 +1038,7 @@ def main() -> int:
     state_path = state_dir / args.state_file
     trigger_file = Path(args.trigger_file).expanduser()
 
-    for required_cmd in ("rnsd", "rnprobe"):
+    for required_cmd in ("rnsd", "rnprobe", "rnstatus"):
         if shutil.which(required_cmd) is None:
             print(f"missing required command in PATH: {required_cmd}", flush=True)
             return 127

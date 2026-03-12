@@ -8,6 +8,7 @@ Portable RNode connectivity check script for Pi Zero 2W field use.
 - Clones your Reticulum config into a temp runtime directory.
 - Patches RNode/KISS interface `port = ...` to the detected serial device.
 - Starts `rnsd` using that runtime config.
+- Waits for configured serial interface(s) to report online via `rnstatus`.
 - Runs `rnprobe` against a list of targets.
 - Prints a compact SSH-friendly summary.
 
@@ -46,6 +47,9 @@ Useful flags:
 - `--timeout 10 --probes 1` tune probing.
 - `--heartbeat-seconds 3` print progress dots while each probe runs (helps SSH sessions stay alive).
 - `--no-progress` disable per-target progress output.
+- `--startup-seconds 4` minimum wait before readiness checks begin.
+- `--ready-timeout-seconds 20` max wait for serial interface(s) to come online.
+- `--ready-poll-seconds 0.5` polling interval for readiness checks.
 - `--keep-runtime` keep generated runtime config/log for debugging.
 - `--verbose` print raw `rnprobe` output per target.
 - `--gpsd` try reading a GPS fix from local `gpsd` (if a GPS receiver is attached).
@@ -102,6 +106,9 @@ Important flags:
 - `--results-hold-seconds 30` keep RESULTS visible before WAIT screen (counts against interval).
 - `--trigger-file /tmp/pi-rns-traveller.run-now` touch-file path for immediate run.
 - `--probe-hard-timeout 35` hard cap for each `rnprobe` process (default auto-derived from probes/timeout/wait).
+- `--startup-seconds 3` minimum wait before readiness checks begin.
+- `--ready-timeout-seconds 20` max wait for serial interface(s) to come online.
+- `--ready-poll-seconds 0.5` polling interval for readiness checks.
 - `--state-dir /path` persistent state/log directory.
 - `--continue-on-error` continue periodic checks after failures.
 
@@ -260,10 +267,10 @@ ls /dev/spidev0.0
 i2cdetect -y 1
 ```
 
-4. Install your Reticulum/RNode CLI stack (`rnsd`, `rnprobe`, `rnodeconf`) using your standard method, then verify:
+4. Install your Reticulum/RNode CLI stack (`rnsd`, `rnprobe`, `rnstatus`, `rnodeconf`) using your standard method, then verify:
 
 ```bash
-command -v rnsd rnprobe rnodeconf
+command -v rnsd rnprobe rnstatus rnodeconf
 ```
 
 5. Configure targets:
