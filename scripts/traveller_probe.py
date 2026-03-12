@@ -616,6 +616,7 @@ def wait_for_rnsd_ready(
         return True, "readiness timeout disabled", waited
 
     poll_seconds = max(ready_poll_seconds, 0.1)
+    status_cmd_timeout = max(4.0, poll_seconds + 1.5)
     expected_serial_names = enabled_serial_interface_names(runtime_cfg)
     deadline = time.monotonic() + ready_timeout
     last_detail = "waiting for rnstatus"
@@ -625,7 +626,7 @@ def wait_for_rnsd_ready(
             waited = time.monotonic() - started
             return False, "rnsd exited before readiness", waited
 
-        stats = read_rnstatus_json(config_dir, timeout_seconds=poll_seconds + 0.8)
+        stats = read_rnstatus_json(config_dir, timeout_seconds=status_cmd_timeout)
         if stats is not None:
             ready, detail = serial_interfaces_ready(stats, expected_serial_names)
             last_detail = detail
@@ -1192,7 +1193,7 @@ def main() -> int:
             print(f" {marker} {candidate}")
         return 0
 
-    for required_cmd in ("rnsd", "rnprobe", "rnstatus"):
+    for required_cmd in ("rnsd", "rnprobe"):
         if not command_exists(required_cmd):
             eprint(f"{required_cmd} not found in PATH.")
             return 127
@@ -1293,12 +1294,18 @@ def main() -> int:
             ready_poll_seconds=args.ready_poll_seconds,
         )
         if not ready:
-            log_tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
-            eprint(f"rnsd not ready after {waited_s:.1f}s ({ready_detail}). Recent log lines:")
-            for line in log_tail:
-                eprint(f"  {line}")
-            return 3
-        status(f"traveller_probe: rnsd ready after {waited_s:.1f}s ({ready_detail})")
+            if "rnsd exited" in ready_detail:
+                log_tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
+                eprint(f"rnsd not ready after {waited_s:.1f}s ({ready_detail}). Recent log lines:")
+                for line in log_tail:
+                    eprint(f"  {line}")
+                return 3
+            status(
+                "traveller_probe: warning: readiness timed out "
+                f"after {waited_s:.1f}s ({ready_detail}); continuing with probes"
+            )
+        else:
+            status(f"traveller_probe: rnsd ready after {waited_s:.1f}s ({ready_detail})")
 
         status("traveller_probe: running probes")
         results = run_probes(

@@ -830,10 +830,17 @@ def run_cycle(
             ready_poll_seconds=args.ready_poll_seconds,
         )
         if not ready:
-            tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
-            tail_msg = " | ".join(tail) if tail else "rnsd log empty"
-            raise RuntimeError(f"rnsd not ready after {waited_s:.1f}s ({ready_detail}); {tail_msg[:120]}")
-        print(f"rnsd ready after {waited_s:.1f}s ({ready_detail})", flush=True)
+            if "rnsd exited" in ready_detail:
+                tail = rnsd_log.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]
+                tail_msg = " | ".join(tail) if tail else "rnsd log empty"
+                raise RuntimeError(f"rnsd not ready after {waited_s:.1f}s ({ready_detail}); {tail_msg[:120]}")
+            print(
+                "warning: readiness timed out "
+                f"after {waited_s:.1f}s ({ready_detail}); continuing with probes",
+                flush=True,
+            )
+        else:
+            print(f"rnsd ready after {waited_s:.1f}s ({ready_detail})", flush=True)
 
         targets_path = resolve_targets_file(args.targets_file)
         targets = load_targets(targets_path, args.default_full_name)
@@ -1038,7 +1045,7 @@ def main() -> int:
     state_path = state_dir / args.state_file
     trigger_file = Path(args.trigger_file).expanduser()
 
-    for required_cmd in ("rnsd", "rnprobe", "rnstatus"):
+    for required_cmd in ("rnsd", "rnprobe"):
         if shutil.which(required_cmd) is None:
             print(f"missing required command in PATH: {required_cmd}", flush=True)
             return 127

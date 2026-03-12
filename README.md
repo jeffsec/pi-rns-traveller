@@ -50,6 +50,7 @@ Useful flags:
 - `--startup-seconds 4` minimum wait before readiness checks begin.
 - `--ready-timeout-seconds 20` max wait for serial interface(s) to come online.
 - `--ready-poll-seconds 0.5` polling interval for readiness checks.
+- If readiness times out, the run logs a warning and continues probing.
 - `--keep-runtime` keep generated runtime config/log for debugging.
 - `--verbose` print raw `rnprobe` output per target.
 - `--gpsd` try reading a GPS fix from local `gpsd` (if a GPS receiver is attached).
@@ -109,6 +110,7 @@ Important flags:
 - `--startup-seconds 3` minimum wait before readiness checks begin.
 - `--ready-timeout-seconds 20` max wait for serial interface(s) to come online.
 - `--ready-poll-seconds 0.5` polling interval for readiness checks.
+- If readiness times out, the cycle logs a warning and still runs probes.
 - `--state-dir /path` persistent state/log directory.
 - `--continue-on-error` continue periodic checks after failures.
 
