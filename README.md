@@ -101,6 +101,7 @@ Important flags:
 - `--check-interval-seconds 120` periodic run interval (default: 120s).
 - `--results-hold-seconds 30` keep RESULTS visible before WAIT screen (counts against interval).
 - `--trigger-file /tmp/pi-rns-traveller.run-now` touch-file path for immediate run.
+- `--probe-hard-timeout 35` hard cap for each `rnprobe` process (default auto-derived from probes/timeout/wait).
 - `--state-dir /path` persistent state/log directory.
 - `--continue-on-error` continue periodic checks after failures.
 
@@ -163,6 +164,30 @@ Then apply:
 sudo systemctl daemon-reload
 sudo systemctl restart pi-rns-traveller.service
 ```
+
+## Remote Update Flow (Local Repo -> Pi)
+
+Typical workflow for this project is:
+
+1. Make/test changes locally in this repo.
+2. Commit + push to `origin/main`.
+3. SSH to the Pi and pull the new commit(s).
+4. Restart service(s) to pick up code/config changes.
+
+Pi-side update commands:
+
+```bash
+cd ~/pi-rns-traveller
+git pull origin main
+sudo cp deploy/pi-rns-traveller.service /etc/systemd/system/pi-rns-traveller.service
+sudo systemctl daemon-reload
+sudo systemctl restart pi-rns-traveller.service
+```
+
+Notes:
+
+- `git pull` only fetches committed+pushed changes from remote.
+- If only Python files changed (no service file edits), `cp ...service` and `daemon-reload` are optional; restart is enough.
 
 ## Field Networking (NetworkManager, Recoverable)
 

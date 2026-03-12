@@ -663,7 +663,29 @@ def finish_run_record(
     conn.commit()
 
 
-def probe_target(config_dir: Path, target: Target, probes: int, timeout: float, wait: float) -> ProbeResult:
+def _coerce_process_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return value
+
+
+def compute_probe_hard_timeout(probes: int, timeout: float, wait: float, explicit_timeout: float) -> float:
+    if explicit_timeout > 0:
+        return explicit_timeout
+    per_probe = max(timeout, 0.0) + max(wait, 0.0) + 3.0
+    return max(25.0, (max(probes, 1) * per_probe) + 8.0)
+
+
+def probe_target(
+    config_dir: Path,
+    target: Target,
+    probes: int,
+    timeout: float,
+    wait: float,
+    hard_timeout: float,
+) -> ProbeResult:
     cmd = [
         "rnprobe",
         "--config",
@@ -677,9 +699,15 @@ def probe_target(config_dir: Path, target: Target, probes: int, timeout: float, 
         target.full_name,
         target.destination_hash,
     ]
-    run = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
-    output = (run.stdout or "") + (run.stderr or "")
-    return parse_probe_result(target, output, run.returncode)
+    effective_timeout = compute_probe_hard_timeout(probes, timeout, wait, hard_timeout)
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=effective_timeout)  # noqa: S603
+        output = (run.stdout or "") + (run.stderr or "")
+        return parse_probe_result(target, output, run.returncode)
+    except subprocess.TimeoutExpired as exc:
+        output = _coerce_process_text(exc.stdout) + _coerce_process_text(exc.stderr)
+        output += f"\nprobe timed out (hard-timeout {effective_timeout:.1f}s)\n"
+        return parse_probe_result(target, output, 124)
 
 
 def render_rows(results: list[ProbeResult]) -> list[str]:
@@ -811,7 +839,14 @@ def run_cycle(
             atomic_write_json(state_file, snapshot)
 
             print(f"[{index}/{len(targets)}] probing {target.label}", flush=True)
-            result = probe_target(runtime_dir, target, args.probes, args.timeout, args.wait)
+            result = probe_target(
+                runtime_dir,
+                target,
+                args.probes,
+                args.timeout,
+                args.wait,
+                args.probe_hard_timeout,
+            )
             results.append(result)
             record_probe_result(conn, run_id, index, result)
 
@@ -890,6 +925,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--probes", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=12.0)
     parser.add_argument("--wait", type=float, default=0.0)
+    parser.add_argument(
+        "--probe-hard-timeout",
+        type=float,
+        default=0.0,
+        help="Hard cap in seconds for each rnprobe process (0 = auto-derived).",
+    )
     parser.add_argument("--startup-seconds", type=float, default=3.0)
 
     parser.add_argument("--gpsd", action="store_true")
