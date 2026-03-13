@@ -78,6 +78,43 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         pass
 
 
+def read_json_dict(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def build_wait_snapshot(base: dict[str, Any], message: str, summary: str) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "stage": "WAIT",
+        "message": message,
+        "summary": summary,
+    }
+    for key in (
+        "serial_port",
+        "lat",
+        "lon",
+        "battery_pct",
+        "battery_v",
+        "total_targets",
+        "reachable",
+        "unreachable",
+        "rows",
+        "cards",
+    ):
+        if key in base:
+            snapshot[key] = base[key]
+    return snapshot
+
+
 def short_port(port: str | None) -> str:
     if not port:
         return "-"
@@ -1106,11 +1143,8 @@ def main() -> int:
                     break
                 if was_triggered:
                     print(f"manual trigger received ({trigger_file}), running now", flush=True)
-                    snapshot = {
-                        "stage": "WAIT",
-                        "message": "manual trigger",
-                        "summary": "running now",
-                    }
+                    state_base = read_json_dict(state_path)
+                    snapshot = build_wait_snapshot(state_base, "manual trigger", "running now")
                     display.update(snapshot)
                     atomic_write_json(state_path, snapshot)
                     continue
@@ -1119,11 +1153,8 @@ def main() -> int:
             if remaining_wait_s <= 0:
                 continue
 
-            snapshot = {
-                "stage": "WAIT",
-                "message": f"next run in {remaining_wait_s}s",
-                "summary": "waiting",
-            }
+            state_base = read_json_dict(state_path)
+            snapshot = build_wait_snapshot(state_base, f"next run in {remaining_wait_s}s", "waiting")
             display.update(snapshot, force=True)
             atomic_write_json(state_path, snapshot)
             last_announced_remaining = remaining_wait_s
@@ -1132,14 +1163,10 @@ def main() -> int:
                 nonlocal last_announced_remaining
                 should_refresh_wait = (
                     remaining != last_announced_remaining
-                    and (remaining <= 10 or remaining % 10 == 0)
+                    and remaining % 30 == 0
                 )
                 if should_refresh_wait:
-                    wait_snapshot = {
-                        "stage": "WAIT",
-                        "message": f"next run in {remaining}s",
-                        "summary": "waiting",
-                    }
+                    wait_snapshot = build_wait_snapshot(state_base, f"next run in {remaining}s", "waiting")
                     display.update(wait_snapshot)
                     atomic_write_json(state_path, wait_snapshot)
                     last_announced_remaining = remaining
@@ -1154,11 +1181,8 @@ def main() -> int:
                 break
             if was_triggered:
                 print(f"manual trigger received ({trigger_file}), running now", flush=True)
-                snapshot = {
-                    "stage": "WAIT",
-                    "message": "manual trigger",
-                    "summary": "running now",
-                }
+                state_base = read_json_dict(state_path)
+                snapshot = build_wait_snapshot(state_base, "manual trigger", "running now")
                 display.update(snapshot)
                 atomic_write_json(state_path, snapshot)
 
