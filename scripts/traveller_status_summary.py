@@ -68,27 +68,43 @@ def classify_status(reachable: int | bool, reason: str) -> str:
     return "FAIL"
 
 
-def iter_rows_from_sqlite(db_path: Path) -> Iterable[tuple[dt.datetime, int, str]]:
+def normalize_label(label: str) -> str:
+    cleaned = (label or "").strip()
+    return cleaned if cleaned else "(unknown)"
+
+
+def normalize_hash(value: str) -> str:
+    cleaned = (value or "").strip().lower()
+    return cleaned if cleaned else "(unknown)"
+
+
+def iter_rows_from_sqlite(db_path: Path) -> Iterable[tuple[dt.datetime, int, str, str, str]]:
     conn = sqlite3.connect(str(db_path))
     try:
         query = """
-            SELECT probe_results.ts_utc, probe_results.reachable, probe_results.reason
+            SELECT probe_results.ts_utc, probe_results.reachable, probe_results.reason, probe_results.label, probe_results.destination_hash
             FROM probe_results
             ORDER BY probe_results.ts_utc ASC;
         """
-        for ts_text, reachable, reason in conn.execute(query):
+        for ts_text, reachable, reason, label, destination_hash in conn.execute(query):
             if ts_text is None:
                 continue
             try:
                 ts_utc = parse_iso_datetime(str(ts_text))
             except ValueError:
                 continue
-            yield ts_utc, int(reachable), str(reason or "")
+            yield (
+                ts_utc,
+                int(reachable),
+                str(reason or ""),
+                normalize_label(str(label or "")),
+                normalize_hash(str(destination_hash or "")),
+            )
     finally:
         conn.close()
 
 
-def iter_rows_from_csv(csv_path: Path) -> Iterable[tuple[dt.datetime, int, str]]:
+def iter_rows_from_csv(csv_path: Path) -> Iterable[tuple[dt.datetime, int, str, str, str]]:
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -105,7 +121,9 @@ def iter_rows_from_csv(csv_path: Path) -> Iterable[tuple[dt.datetime, int, str]]
             except ValueError:
                 reachable = 0
             reason = (row.get("reason") or "").strip()
-            yield ts_utc, reachable, reason
+            label = normalize_label((row.get("label") or "").strip())
+            destination_hash = normalize_hash((row.get("destination_hash") or "").strip())
+            yield ts_utc, reachable, reason, label, destination_hash
 
 
 def choose_input_source(args: argparse.Namespace) -> tuple[str, Path]:
@@ -127,24 +145,31 @@ def choose_input_source(args: argparse.Namespace) -> tuple[str, Path]:
 
 
 def summarize(
-    rows: Iterable[tuple[dt.datetime, int, str]],
+    rows: Iterable[tuple[dt.datetime, int, str, str, str]],
     bucket: str,
     since: dt.datetime | None,
     until: dt.datetime | None,
-) -> dict[dt.datetime, Counter[str]]:
-    grouped: dict[dt.datetime, Counter[str]] = defaultdict(Counter)
-    for ts_utc, reachable, reason in rows:
+    pivot: str,
+) -> dict[tuple[dt.datetime, str], Counter[str]]:
+    grouped: dict[tuple[dt.datetime, str], Counter[str]] = defaultdict(Counter)
+    for ts_utc, reachable, reason, label, destination_hash in rows:
         if since is not None and ts_utc < since:
             continue
         if until is not None and ts_utc >= until:
             continue
         bucket_ts = bucket_start(ts_utc, bucket)
         status = classify_status(reachable, reason)
-        grouped[bucket_ts][status] += 1
+        if pivot == "node":
+            key = (bucket_ts, normalize_label(label))
+        elif pivot == "hash":
+            key = (bucket_ts, normalize_hash(destination_hash))
+        else:
+            key = (bucket_ts, "ALL")
+        grouped[key][status] += 1
     return grouped
 
 
-def print_table(grouped: dict[dt.datetime, Counter[str]]) -> None:
+def print_table(grouped: dict[tuple[dt.datetime, str], Counter[str]], pivot: str) -> None:
     if not grouped:
         print("No probe rows matched the selected filters.")
         return
@@ -158,14 +183,25 @@ def print_table(grouped: dict[dt.datetime, Counter[str]]) -> None:
     if not active_statuses:
         active_statuses = ["OK", "FAIL"]
 
-    headers = ["bucket_utc", "total"] + active_statuses
+    if pivot == "node":
+        headers = ["bucket_utc", "node_label", "total"] + active_statuses
+    elif pivot == "hash":
+        headers = ["bucket_utc", "destination_hash", "total"] + active_statuses
+    else:
+        headers = ["bucket_utc", "total"] + active_statuses
     rows: list[list[str]] = []
     widths = [len(h) for h in headers]
 
     for key in ordered_keys:
         counter = grouped[key]
+        bucket_ts, node_label = key
         total = sum(counter.values())
-        row_values = [key.isoformat(), str(total)] + [str(counter[s]) for s in active_statuses]
+        if pivot == "node":
+            row_values = [bucket_ts.isoformat(), node_label, str(total)] + [str(counter[s]) for s in active_statuses]
+        elif pivot == "hash":
+            row_values = [bucket_ts.isoformat(), node_label, str(total)] + [str(counter[s]) for s in active_statuses]
+        else:
+            row_values = [bucket_ts.isoformat(), str(total)] + [str(counter[s]) for s in active_statuses]
         rows.append(row_values)
         for idx, value in enumerate(row_values):
             if len(value) > widths[idx]:
@@ -205,6 +241,18 @@ def parse_args() -> argparse.Namespace:
         help="Time bucket size for counts (default: hour).",
     )
     parser.add_argument(
+        "--pivot",
+        choices=["none", "node", "hash"],
+        default="none",
+        help="Pivot output by node label or destination hash.",
+    )
+    parser.add_argument(
+        "--last-hours",
+        type=float,
+        default=None,
+        help="Shortcut for --since now-last_hours (UTC).",
+    )
+    parser.add_argument(
         "--since",
         default=None,
         help="Inclusive start time (ISO-8601, interpreted as UTC if no timezone).",
@@ -219,8 +267,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.last_hours is not None and args.since:
+        print("Use either --since or --last-hours, not both.", file=sys.stderr)
+        return 2
+
     since = parse_iso_datetime(args.since) if args.since else None
     until = parse_iso_datetime(args.until) if args.until else None
+    if args.last_hours is not None:
+        if args.last_hours <= 0:
+            print("--last-hours must be > 0", file=sys.stderr)
+            return 2
+        since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=args.last_hours)
     if since is not None and until is not None and since >= until:
         print("--since must be earlier than --until", file=sys.stderr)
         return 2
@@ -236,13 +293,17 @@ def main() -> int:
     else:
         rows = iter_rows_from_csv(source_path)
 
-    grouped = summarize(rows, bucket=args.bucket, since=since, until=until)
+    grouped = summarize(rows, bucket=args.bucket, since=since, until=until, pivot=args.pivot)
     print(f"Source: {source_type} ({source_path})")
     if since is not None:
         print(f"Since:  {since.isoformat()}")
     if until is not None:
         print(f"Until:  {until.isoformat()}")
-    print_table(grouped)
+    if args.pivot == "node":
+        print("Pivot:  node_label")
+    if args.pivot == "hash":
+        print("Pivot:  destination_hash")
+    print_table(grouped, pivot=args.pivot)
     return 0
 
 
