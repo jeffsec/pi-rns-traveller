@@ -125,6 +125,19 @@ Durable appliance logs:
 - `state/history.db` SQLite run + per-target result history.
 - `state/state.json` latest appliance screen state.
 
+Status summary utility:
+
+```bash
+# Auto-pick state/history.db when present, else logs/traveller-history.csv
+python3 scripts/traveller_status_summary.py --bucket hour
+
+# Force CSV input
+python3 scripts/traveller_status_summary.py --source csv --csv-file logs/traveller-history.csv --bucket day
+
+# Time-windowed summary (UTC unless timezone is included)
+python3 scripts/traveller_status_summary.py --since 2026-03-10T00:00:00Z --until 2026-03-11T00:00:00Z --bucket hour
+```
+
 Manual run trigger while service is waiting:
 
 ```bash
